@@ -1,5 +1,6 @@
 using System.Data;
 using System.Globalization;
+using System.Text;
 using ExcelDataReader;
 using GeoPulse.Core.Models;
 using GeoPulse.Core.Repositories;
@@ -7,13 +8,15 @@ using GeoPulse.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace GeoPulse.Ingestion.Service
 {
     /// <summary>
     /// Парсер Excel-файла добычи Volve: читает лист Daily Production Data,
-    /// пропускает строки с пустыми ключами, дедуплицирует по паре (WellId, Date)
-    /// и пишет данные в PostgreSQL батчами.
+    /// пропускает строки с пустыми ключами и вставляет данные в PostgreSQL пакетами
+    /// через upsert (INSERT ... ON CONFLICT (well_id, date) DO NOTHING).
     /// </summary>
     public sealed class IngestionService
     {
@@ -21,7 +24,6 @@ namespace GeoPulse.Ingestion.Service
 
         private readonly CoreDbContext _db;
         private readonly IWellRepository _wellRepository;
-        private readonly IDailyProductionRepository _dailyProductionRepository;
         private readonly IConfiguration _configuration;
         private readonly ILogger<IngestionService> _logger;
 
@@ -29,13 +31,11 @@ namespace GeoPulse.Ingestion.Service
         public IngestionService(
             CoreDbContext db,
             IWellRepository wellRepository,
-            IDailyProductionRepository dailyProductionRepository,
             IConfiguration configuration,
             ILogger<IngestionService> logger)
         {
             _db = db;
             _wellRepository = wellRepository;
-            _dailyProductionRepository = dailyProductionRepository;
             _configuration = configuration;
             _logger = logger;
         }
@@ -45,8 +45,16 @@ namespace GeoPulse.Ingestion.Service
         {
             await _db.Database.MigrateAsync(cancellationToken);
 
-            var workbookPath = _configuration["Volve:ProductionWorkbook"]
-                ?? Path.Combine("xml", "Volve_Production_data", "Volve production data.xlsx");
+            var configuredWorkbook = _configuration["Volve:ProductionWorkbook"];
+            if (string.IsNullOrWhiteSpace(configuredWorkbook))
+            {
+                throw new InvalidOperationException(
+                    "Не задан Volve:ProductionWorkbook в appsettings.json.");
+            }
+
+            // Относительный путь разрешается относительно рабочей директории
+            // (сервис запускается из корня репозитория).
+            var workbookPath = Path.GetFullPath(configuredWorkbook);
             var batchSize = _configuration.GetValue("Volve:BatchSize", 500);
             if (batchSize <= 0)
             {
@@ -168,44 +176,30 @@ namespace GeoPulse.Ingestion.Service
                 _logger.LogInformation("Добавлено скважин: {Wells}", newWells.Count);
             }
 
-            // 3. Дедупликация: существующие пары (WellId, Date).
-            var existingDaily = await _dailyProductionRepository.GetAllAsync(cancellationToken);
-            var existingKeys = existingDaily
-                .Select(item => (item.WellId, item.Date))
-                .ToHashSet();
-
-            var seenThisRun = new HashSet<(int WellId, DateOnly Date)>();
-
+            // 3. Вставка upsert-ом: конфликты по (well_id, date) отбрасываются на стороне PostgreSQL.
             var batch = new List<DailyProduction>(batchSize);
             var rowsInserted = 0;
             var rowsSkippedDuplicate = 0;
 
             foreach (var parsed in parsedRows)
             {
-                var wellId = npdToWellId[parsed.NpdWellBoreCode];
-                var key = (wellId, parsed.Production.Date);
-
-                if (existingKeys.Contains(key) || !seenThisRun.Add(key))
-                {
-                    rowsSkippedDuplicate++;
-                    continue;
-                }
-
-                parsed.Production.WellId = wellId;
+                parsed.Production.WellId = npdToWellId[parsed.NpdWellBoreCode];
                 batch.Add(parsed.Production);
 
                 if (batch.Count >= batchSize)
                 {
-                    await _dailyProductionRepository.AddRangeAsync(batch, cancellationToken);
-                    rowsInserted += batch.Count;
+                    var inserted = await InsertBatchOnConflictDoNothingAsync(batch, cancellationToken);
+                    rowsInserted += inserted;
+                    rowsSkippedDuplicate += batch.Count - inserted;
                     batch.Clear();
                 }
             }
 
             if (batch.Count > 0)
             {
-                await _dailyProductionRepository.AddRangeAsync(batch, cancellationToken);
-                rowsInserted += batch.Count;
+                var inserted = await InsertBatchOnConflictDoNothingAsync(batch, cancellationToken);
+                rowsInserted += inserted;
+                rowsSkippedDuplicate += batch.Count - inserted;
             }
 
             var totalSkipped = rowsSkippedNullKey + rowsSkippedDuplicate;
@@ -222,6 +216,74 @@ namespace GeoPulse.Ingestion.Service
             Console.WriteLine($"  - пустой ключ:     {rowsSkippedNullKey}");
             Console.WriteLine($"  - дубликаты:       {rowsSkippedDuplicate}");
             Console.WriteLine($"Скважин:             {npdToWellId.Count}");
+        }
+
+        /// <summary>Колонки <c>daily_production</c> в порядке параметров upsert-запроса.</summary>
+        private static readonly (string Column, NpgsqlDbType Type, Func<DailyProduction, object?> Value)[] UpsertColumns =
+        {
+            ("id", NpgsqlDbType.Uuid, item => item.Id),
+            ("well_id", NpgsqlDbType.Integer, item => item.WellId),
+            ("date", NpgsqlDbType.Date, item => item.Date),
+            ("on_stream_hrs", NpgsqlDbType.Double, item => item.OnStreamHrs),
+            ("avg_downhole_pressure", NpgsqlDbType.Double, item => item.AvgDownholePressure),
+            ("avg_downhole_temperature", NpgsqlDbType.Double, item => item.AvgDownholeTemperature),
+            ("avg_dp_tubing", NpgsqlDbType.Double, item => item.AvgDpTubing),
+            ("avg_annulus_pressure", NpgsqlDbType.Double, item => item.AvgAnnulusPressure),
+            ("avg_choke_size", NpgsqlDbType.Double, item => item.AvgChokeSize),
+            ("avg_whp", NpgsqlDbType.Double, item => item.AvgWhp),
+            ("avg_wht", NpgsqlDbType.Double, item => item.AvgWht),
+            ("dp_choke_size", NpgsqlDbType.Double, item => item.DpChokeSize),
+            ("oil_vol", NpgsqlDbType.Double, item => item.OilVol),
+            ("gas_vol", NpgsqlDbType.Double, item => item.GasVol),
+            ("water_vol", NpgsqlDbType.Double, item => item.WaterVol),
+            ("water_injection_vol", NpgsqlDbType.Double, item => item.WaterInjectionVol)
+        };
+
+        /// <summary>
+        /// Вставляет пакет строк одним запросом
+        /// <c>INSERT ... ON CONFLICT (well_id, date) DO NOTHING</c>.
+        /// Возвращает число реально вставленных строк; остальные — конфликты по (well_id, date).
+        /// </summary>
+        private async Task<int> InsertBatchOnConflictDoNothingAsync(
+            IReadOnlyList<DailyProduction> batch,
+            CancellationToken cancellationToken)
+        {
+            var sql = new StringBuilder(batch.Count * 140 + 256);
+            sql.Append("INSERT INTO daily_production (");
+            sql.Append(string.Join(", ", UpsertColumns.Select(column => column.Column)));
+            sql.Append(") VALUES ");
+
+            var parameters = new List<NpgsqlParameter>(batch.Count * UpsertColumns.Length);
+
+            for (var row = 0; row < batch.Count; row++)
+            {
+                if (row > 0)
+                {
+                    sql.Append(',');
+                }
+
+                sql.Append('(');
+                for (var column = 0; column < UpsertColumns.Length; column++)
+                {
+                    if (column > 0)
+                    {
+                        sql.Append(',');
+                    }
+
+                    var name = $"@p{parameters.Count}";
+                    sql.Append(name);
+                    parameters.Add(new NpgsqlParameter(name, UpsertColumns[column].Type)
+                    {
+                        Value = UpsertColumns[column].Value(batch[row]) ?? DBNull.Value
+                    });
+                }
+
+                sql.Append(')');
+            }
+
+            sql.Append(" ON CONFLICT (well_id, date) DO NOTHING");
+
+            return await _db.Database.ExecuteSqlRawAsync(sql.ToString(), parameters, cancellationToken);
         }
 
         private static object? Cell(DataRow row, string column) =>
