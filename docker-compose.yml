@@ -3,7 +3,7 @@ services:
     image: postgres:17-alpine
     container_name: geopulse-postgres
     environment:
-      POSTGRES_DB: geopulse
+      POSTGRES_DB: geopulse_core
       POSTGRES_USER: geopulse
       POSTGRES_PASSWORD: geopulse
     ports:
@@ -11,17 +11,71 @@ services:
     volumes:
       - geopulse-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U geopulse -d geopulse"]
+      test: ["CMD-SHELL", "pg_isready -U geopulse -d geopulse_core"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: geopulse-clickhouse
+    environment:
+      CLICKHOUSE_DB: geopulse
+      CLICKHOUSE_USER: geopulse
+      CLICKHOUSE_PASSWORD: geopulse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - geopulse-chdata:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: geopulse-kafka
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: geopulse-kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: geopulse-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    ports:
+      - "8080:8080"
+    depends_on:
+      - kafka
+
   webapi:
-    build: ./src/GeoPulse.WebAPI
+    build:
+      context: .
+      dockerfile: src/GeoPulse.WebAPI/Dockerfile
     container_name: geopulse-webapi
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__GeoPulse: Host=postgres;Port=5432;Database=geopulse;Username=geopulse;Password=geopulse
+      ConnectionStrings__GeoPulse: Host=postgres;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse
     ports:
       - "5146:5146"
     depends_on:
@@ -30,3 +84,4 @@ services:
 
 volumes:
   geopulse-pgdata:
+  geopulse-chdata:

@@ -1,4 +1,3 @@
-using GeoPulse.WebAPI.Models;
 using Microsoft.AspNetCore.Mvc;
 
 namespace GeoPulse.WebAPI.Controllers
@@ -16,13 +15,13 @@ namespace GeoPulse.WebAPI.Controllers
         /// </summary>
         /// <returns></returns>
         [HttpGet("wells")]
-        [ProducesResponseType(typeof(IEnumerable<WellDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status200OK)]
         public IActionResult GetWells()
         {
             var wells = new[]
             {
-                new WellDto { NpdWellBoreCode = 557, Name = "15/9-F-11", OilRate = 8550.55 },
-                new WellDto { NpdWellBoreCode = 563, Name = "15/9-F-12", OilRate = 6120.10 }
+                new { NpdWellBoreCode = 557, Name = "15/9-F-11", OilRate = 8550.55 },
+                new { NpdWellBoreCode = 563, Name = "15/9-F-12", OilRate = 6120.10 }
             };
             return Ok(wells);
         }

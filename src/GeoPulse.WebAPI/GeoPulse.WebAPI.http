@@ -5,26 +5,8 @@ Accept: application/json
 
 ###
 
-# Скважины из PostgreSQL (после импорта)
+# Скважины из PostgreSQL
 GET {{GeoPulse_HostAddress}}/api/wells
-Accept: application/json
-
-###
-
-# Стволы скважины
-GET {{GeoPulse_HostAddress}}/api/wells/1/wellbores
-Accept: application/json
-
-###
-
-# Импорт исходных данных Volve (пакетами по 1000 записей)
-POST {{GeoPulse_HostAddress}}/api/import/volve
-Accept: application/json
-
-###
-
-# Журнал запусков импорта
-GET {{GeoPulse_HostAddress}}/api/import/runs
 Accept: application/json
 
 ###
