@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: geopulse-postgres
+    environment:
+      POSTGRES_DB: geopulse
+      POSTGRES_USER: geopulse
+      POSTGRES_PASSWORD: geopulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - geopulse-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geopulse -d geopulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  webapi:
+    build: ./src/GeoPulse.WebAPI
+    container_name: geopulse-webapi
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__GeoPulse: Host=postgres;Port=5432;Database=geopulse;Username=geopulse;Password=geopulse
+    ports:
+      - "5146:5146"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  geopulse-pgdata:

@@ -1,0 +1,14 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# VS Code
+.vscode/
+
+# Данные Volve (большие файлы + лицензия Equinor)
+data/
+
+# Логи и временные файлы
+*.log
