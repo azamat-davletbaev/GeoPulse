@@ -166,7 +166,7 @@ m RKB     deg       deg       m RKB     m               m               m       
 
 Индексы: `(wellbore_id, production_date)`, `production_date`, `npd_wellbore_code`.
 
-**`production_monthly`** — 526 строк (лист `Monthly Production Data`).
+**`production_monthly`** — 526 строк (лист `Monthly Production Data`). Проектное имя таблицы: в текущей схеме помесячные агрегаты лежат в `analytics.monthly_production` (PostgreSQL, заморожена) и `gp.monthly_production` (ClickHouse).
 
 | Колонка | Тип | Источник |
 | --- | --- | --- |
@@ -250,7 +250,7 @@ GET  /api/wells/{id}/wellbores         # стволы скважины
 ### 4.4 Настройки (`appsettings.json`)
 
 ```json
-"ConnectionStrings": { "GeoPulse": "Host=localhost;Port=5432;Database=geopulse;Username=geopulse;Password=geopulse" },
+"ConnectionStrings": { "GeoPulse": "Host=localhost;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse" },
 "Database": { "AutoMigrate": false },
 "Volve": {
   "DataRoot": "xml",

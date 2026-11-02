@@ -8,12 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\GeoPulse.Core\GeoPulse.Core.csproj" />
-    <ProjectReference Include="..\GeoPulse.Infrastructure\GeoPulse.Infrastructure.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Confluent.Kafka" Version="2.16.0" />
+    <PackageReference Include="ClickHouse.Client" Version="7.14.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
   </ItemGroup>
 

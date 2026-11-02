@@ -5,6 +5,7 @@
     <Project Path="src/GeoPulse.Ingestion.Service/GeoPulse.Ingestion.Service.csproj" />
     <Project Path="src/GeoPulse.Aggregator/GeoPulse.Aggregator.csproj" />
     <Project Path="src/GeoPulse.Consumer/GeoPulse.Consumer.csproj" />
+    <Project Path="src/GeoPulse.CHIngest/GeoPulse.CHIngest.csproj" />
     <Project Path="src/GeoPulse.WebAPI/GeoPulse.WebAPI.csproj" />
   </Folder>
 </Solution>

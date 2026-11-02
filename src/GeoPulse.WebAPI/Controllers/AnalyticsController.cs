@@ -4,17 +4,17 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace GeoPulse.WebAPI.Controllers
 {
-    /// <summary>Помесячная аналитика добычи (схема analytics).</summary>
+    /// <summary>Помесячная аналитика добычи (ClickHouse gp.monthly_production; Postgres-схема analytics заморожена).</summary>
     [ApiController]
     [Route("api/[controller]")]
     [Produces("application/json")]
     public class AnalyticsController : ControllerBase
     {
         private readonly IWellRepository _wells;
-        private readonly IAnalyticsRepository _analytics;
+        private readonly ClickHouseAnalyticsService _analytics;
 
         /// <summary>Конструктор.</summary>
-        public AnalyticsController(IWellRepository wells, IAnalyticsRepository analytics)
+        public AnalyticsController(IWellRepository wells, ClickHouseAnalyticsService analytics)
         {
             _wells = wells;
             _analytics = analytics;
@@ -41,7 +41,7 @@ namespace GeoPulse.WebAPI.Controllers
 
             var rows = await _analytics.GetMonthlyByWellAsync(well.Id, cancellationToken);
 
-            return Ok(rows.Select(MonthlyProductionDto.FromModel).ToList());
+            return Ok(rows);
         }
 
         /// <summary>Суммарная добыча по всем скважинам за всё время (один SQL-запрос).</summary>
@@ -50,9 +50,7 @@ namespace GeoPulse.WebAPI.Controllers
         [ProducesResponseType(typeof(ProductionSummaryDto), StatusCodes.Status200OK)]
         public async Task<ActionResult<ProductionSummaryDto>> GetSummary(CancellationToken cancellationToken)
         {
-            var summary = await _analytics.GetSummaryAsync(cancellationToken);
-
-            return Ok(summary is null ? new ProductionSummaryDto() : ProductionSummaryDto.FromModel(summary));
+            return Ok(await _analytics.GetSummaryAsync(cancellationToken));
         }
     }
 }

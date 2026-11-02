@@ -1,5 +1,6 @@
 using System.Reflection;
 using GeoPulse.Infrastructure;
+using GeoPulse.WebAPI;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,6 +23,7 @@ var connectionString = builder.Configuration.GetConnectionString("GeoPulse")
     ?? DatabaseConfiguration.DefaultConnectionString;
 
 builder.Services.AddGeoPulseInfrastructure(connectionString);
+builder.Services.AddSingleton<ClickHouseAnalyticsService>();
 
 var app = builder.Build();
 
