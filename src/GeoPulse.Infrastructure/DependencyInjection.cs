@@ -17,6 +17,7 @@ namespace GeoPulse.Infrastructure
 
             services.AddScoped<IWellRepository, WellRepository>();
             services.AddScoped<IDailyProductionRepository, DailyProductionRepository>();
+            services.AddScoped<IAnalyticsRepository, AnalyticsRepository>();
 
             return services;
         }

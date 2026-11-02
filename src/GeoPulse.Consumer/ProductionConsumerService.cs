@@ -272,10 +272,33 @@ namespace GeoPulse.Consumer
             try
             {
                 await _dlqProducer.ProduceAsync(dlqTopic, message);
+
+                var rawBody = result.Message.Value ?? string.Empty;
+                var bodyPreview = rawBody.Length <= 100 ? rawBody : rawBody[..100];
+                _logger.LogInformation(
+                    "DLQ: eventType={EventType}, reason={Reason}, key={Key}, body={Body}",
+                    GetEventType(rawBody),
+                    reason,
+                    result.Message.Key,
+                    bodyPreview);
             }
             catch (ProduceException<string, string> ex)
             {
                 _logger.LogError(ex, "Ошибка отправки в DLQ-топик {Topic}", dlqTopic);
+            }
+        }
+
+        /// <summary>Извлекает eventType из тела сообщения; unknown — если тип не определён.</summary>
+        private static string GetEventType(string raw)
+        {
+            try
+            {
+                var header = JsonSerializer.Deserialize<EventHeader>(raw, MessagingJson.Options);
+                return string.IsNullOrWhiteSpace(header?.EventType) ? "unknown" : header.EventType;
+            }
+            catch (JsonException)
+            {
+                return "unparseable";
             }
         }
 

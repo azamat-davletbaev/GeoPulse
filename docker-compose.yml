@@ -68,6 +68,19 @@ services:
     depends_on:
       - kafka
 
+  consumer:
+    build:
+      context: .
+      dockerfile: src/GeoPulse.Consumer/Dockerfile
+    container_name: geopulse-consumer
+    volumes:
+      - ./src/GeoPulse.Consumer/appsettings.Docker.json:/app/appsettings.json:ro
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
   webapi:
     build:
       context: .

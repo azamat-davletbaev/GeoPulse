@@ -17,6 +17,9 @@ namespace GeoPulse.Infrastructure
         /// <summary>Суточная добыча.</summary>
         public DbSet<DailyProductionEntity> DailyProduction => Set<DailyProductionEntity>();
 
+        /// <summary>Помесячные агрегаты добычи (схема analytics).</summary>
+        public DbSet<MonthlyProductionEntity> MonthlyProduction => Set<MonthlyProductionEntity>();
+
         /// <inheritdoc />
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -44,6 +47,18 @@ namespace GeoPulse.Infrastructure
                     .HasForeignKey(item => item.WellId)
                     .HasConstraintName("fk_daily_production_wells")
                     .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<MonthlyProductionEntity>(builder =>
+            {
+                builder.ToTable("monthly_production", "analytics");
+                builder.HasKey(item => new { item.WellId, item.Year, item.Month });
+                builder.Property(item => item.OilVolSum).IsRequired();
+                builder.Property(item => item.GasVolSum).IsRequired();
+                builder.Property(item => item.WaterVolSum).IsRequired();
+                builder.Property(item => item.WaterInjectionVolSum).IsRequired();
+                builder.Property(item => item.OnStreamHrsSum).IsRequired();
+                builder.Property(item => item.DaysCount).IsRequired();
             });
 
             ApplySnakeCaseNames(modelBuilder);

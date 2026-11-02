@@ -32,10 +32,11 @@ Excel ──▶ Ingestion.Service ──▶ Kafka (production-daily) ──▶ G
 | Проект | Назначение |
 | --- | --- |
 | `src/GeoPulse.Core` | Доменные модели (`Well`, `DailyProduction`) и модели событий (`Events/`). Зависимостей от инфраструктуры нет. |
-| `src/GeoPulse.Infrastructure` | EF Core: `CoreDbContext`, сущности, конфигурация, миграции, репозитории. Таблицы `wells` и `daily_production` (уникальный индекс `well_id + date`). |
+| `src/GeoPulse.Infrastructure` | EF Core: `CoreDbContext`, сущности, конфигурация, миграции, репозитории. Таблицы `wells`, `daily_production` (уникальный индекс `well_id + date`) и `analytics.monthly_production` (схема `analytics`: помесячные агрегаты добычи, уникальный ключ `well_id + year + month`). |
 | `src/GeoPulse.Ingestion.Service` | Консольный парсер: Excel Volve → Kafka. В PostgreSQL не пишет. Публикует сначала события `well.registered` (по одному на скважину), затем `production.daily` на каждую строку добычи. Ключ сообщений — строка `npdWellBoreCode` (сохраняет порядок событий в пределах скважины). |
 | `src/GeoPulse.Consumer` | Консольный BackgroundService: слушает топик `production-daily` (группа `geopulse-consumer`), применяет EF-миграции на старте, пишет события в PostgreSQL идемпотентно (`INSERT ... ON CONFLICT DO NOTHING`). Некорректные события (битый JSON, неизвестный `eventType`, неподдерживаемая `schemaVersion`, неизвестная скважина) отправляет в топик `production-daily-dlq` с оригинальным телом и заголовком `reason`. |
 | `src/GeoPulse.WebAPI` | REST API + Swagger, порт `5146`. Точечные данные из PostgreSQL: список скважин, карточка скважины, суточная добыча с фильтром по датам, сортировкой и пагинацией, health-проверка. |
+| `src/GeoPulse.Aggregator` | Консольный BackgroundService — вторая группа консьюмеров (`geopulse-aggregator`) на том же топике `production-daily` (`auto.offset.reset: earliest`). Ведёт помесячные агрегаты добычи по скважинам в `analytics.monthly_production`: загружает базовую линию из БД, инкрементирует суммы в памяти, флашит их каждые 500 обработанных событий и при остановке через `INSERT ... ON CONFLICT (well_id, year, month) DO UPDATE`, затем коммитит офсеты. Дубли дней дедуплицируются в памяти по `(well_id, date)`, поэтому повторные прогоны Ingestion суммы не меняют. Известное ограничение: при крахе между флашем и коммитом офсетов события перечитываются и суммы могут задвоиться; graceful-остановка (Ctrl+C) выполняет флаш и коммит в `finally`. |
 
 ### Схема событий (schemaVersion: 1)
 
@@ -50,7 +51,7 @@ Excel ──▶ Ingestion.Service ──▶ Kafka (production-daily) ──▶ G
 
 ## Инфраструктура (docker compose)
 
-Сервисы (имена контейнеров с префиксом `geopulse-`): `postgres` (localhost:5432, БД `geopulse_core`), `kafka` (внешне localhost:9092, внутри compose-сети `kafka:29092`; бинари CLI — в `/opt/kafka/bin/`, не в PATH), `kafka-ui` (<http://localhost:8080>), `webapi` (порт 5146), `clickhouse` (описан, на текущем этапе не используется).
+Сервисы (имена контейнеров с префиксом `geopulse-`): `postgres` (localhost:5432, БД `geopulse_core`), `kafka` (внешне localhost:9092, внутри compose-сети `kafka:29092`; бинари CLI — в `/opt/kafka/bin/`, не в PATH), `kafka-ui` (<http://localhost:8080>), `consumer` (контейнер `geopulse-consumer`, слушает `production-daily`), `webapi` (порт 5146), `clickhouse` (описан, на текущем этапе не используется).
 
 Строки подключения: `ConnectionStrings:CoreDb` — Consumer; `ConnectionStrings:GeoPulse` — WebAPI.
 
@@ -102,6 +103,8 @@ API отдаёт то, что лежит в PostgreSQL (аналитика по 
 | `GET /api/wells/{npdWellBoreCode}` | Карточка скважины и покрытие данными: `firstProductionDate`, `lastProductionDate`, `productionDays` |
 | `GET /api/wells/{npdWellBoreCode}/production` | Суточная добыча скважины: диапазон дат, сортировка, пагинация |
 | `GET /api/wells/{npdWellBoreCode}/production/{date}` | Одна запись за дату (`yyyy-MM-dd`) |
+| `GET /api/Analytics/monthly?wellCode={code}` | Помесячные агрегаты одной скважины (`wellCode` — это `npdWellBoreCode`) из `analytics.monthly_production` |
+| `GET /api/Analytics/summary` | Суммарная добыча по всем скважинам за всё время (один SQL-запрос) |
 
 Параметры выборки суточной добычи:
 
