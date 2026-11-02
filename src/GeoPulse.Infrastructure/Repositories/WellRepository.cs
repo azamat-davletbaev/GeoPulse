@@ -26,6 +26,16 @@ namespace GeoPulse.Infrastructure.Repositories
         }
 
         /// <inheritdoc />
+        public async Task<Well?> GetByNpdWellBoreCodeAsync(int npdWellBoreCode, CancellationToken cancellationToken = default)
+        {
+            var entity = await _db.Wells
+                .AsNoTracking()
+                .FirstOrDefaultAsync(well => well.NpdWellBoreCode == npdWellBoreCode, cancellationToken);
+
+            return entity is null ? null : Mapper.ToModel(entity);
+        }
+
+        /// <inheritdoc />
         public async Task<IReadOnlyList<Well>> GetAllAsync(CancellationToken cancellationToken = default)
         {
             var entities = await _db.Wells

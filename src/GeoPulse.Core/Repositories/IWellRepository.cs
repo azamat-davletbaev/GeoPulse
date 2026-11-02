@@ -8,6 +8,9 @@ namespace GeoPulse.Core.Repositories
         /// <summary>Скважина по идентификатору.</summary>
         Task<Well?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
 
+        /// <summary>Скважина по коду НПД (натуральный ключ).</summary>
+        Task<Well?> GetByNpdWellBoreCodeAsync(int npdWellBoreCode, CancellationToken cancellationToken = default);
+
         /// <summary>Все скважины.</summary>
         Task<IReadOnlyList<Well>> GetAllAsync(CancellationToken cancellationToken = default);
 

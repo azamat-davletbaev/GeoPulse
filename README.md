@@ -35,7 +35,7 @@ Excel ──▶ Ingestion.Service ──▶ Kafka (production-daily) ──▶ G
 | `src/GeoPulse.Infrastructure` | EF Core: `CoreDbContext`, сущности, конфигурация, миграции, репозитории. Таблицы `wells` и `daily_production` (уникальный индекс `well_id + date`). |
 | `src/GeoPulse.Ingestion.Service` | Консольный парсер: Excel Volve → Kafka. В PostgreSQL не пишет. Публикует сначала события `well.registered` (по одному на скважину), затем `production.daily` на каждую строку добычи. Ключ сообщений — строка `npdWellBoreCode` (сохраняет порядок событий в пределах скважины). |
 | `src/GeoPulse.Consumer` | Консольный BackgroundService: слушает топик `production-daily` (группа `geopulse-consumer`), применяет EF-миграции на старте, пишет события в PostgreSQL идемпотентно (`INSERT ... ON CONFLICT DO NOTHING`). Некорректные события (битый JSON, неизвестный `eventType`, неподдерживаемая `schemaVersion`, неизвестная скважина) отправляет в топик `production-daily-dlq` с оригинальным телом и заголовком `reason`. |
-| `src/GeoPulse.WebAPI` | REST API + Swagger, порт `5146`. |
+| `src/GeoPulse.WebAPI` | REST API + Swagger, порт `5146`. Точечные данные из PostgreSQL: список скважин, карточка скважины, суточная добыча с фильтром по датам, сортировкой и пагинацией, health-проверка. |
 
 ### Схема событий (schemaVersion: 1)
 
@@ -83,13 +83,57 @@ Excel ──▶ Ingestion.Service ──▶ Kafka (production-daily) ──▶ G
    dotnet run --project src/GeoPulse.Ingestion.Service
    ```
 
-5. Проверка: <http://localhost:5146/swagger> (`GET /api/Wells` — список скважин; `GET /api/Production/wells` — пока заглушка) и kafka-ui: <http://localhost:8080>.
+5. Проверка: <http://localhost:5146/swagger> (`GET /api/wells` — список скважин, `GET /api/wells/5351/production?pageSize=20` — суточная добыча, `GET /health` — состояние API и БД), kafka-ui: <http://localhost:8080>. Полная проверка API — смок-тест из раздела «Смок-тест API».
 
 Порядок важен: сначала Consumer, затем Ingestion. Повторный запуск Ingestion безопасен: события уже в базе, консьюмер покажет «вставлено 0, пропущено N». Данные между Kafka и PostgreSQL — at-least-once, идемпотентность записи компенсирует возможные дубликаты.
 
 ## Смок-тест полного цикла
 
-После полного прогона: в `daily_production` — 15 634 записи без дублей (`COUNT(DISTINCT (well_id, date))` = 15 634), в `wells` — 7 скважин, отставание группы консьюмера (lag) — 0 по всем партициям, DLQ пуста.
+После полного прогона: в `daily_production` — 15 634 записи без дублей (`COUNT(DISTINCT (well_id, date))` = 15 634), в `wells` — 7 скважин, отставание группы консьюмера (lag) — 0 по всем партициям, DLQ пуста. Проверка API на этих же данных — смок-тест из раздела «Смок-тест API».
+
+## REST API: точечные данные
+
+API отдаёт то, что лежит в PostgreSQL (аналитика по большим объёмам — этап 4, ClickHouse). Адресация ресурсов — по натуральному ключу `npdWellBoreCode`; внутренние id из БД (`wells.id`, `daily_production.id`) наружу не публикуются.
+
+| Метод и путь | Назначение |
+| --- | --- |
+| `GET /health` | Состояние API и подключения к PostgreSQL: `200` + `status=ok`, либо `503` + `status=degraded`, `database=down` |
+| `GET /api/wells` | Список скважин |
+| `GET /api/wells/{npdWellBoreCode}` | Карточка скважины и покрытие данными: `firstProductionDate`, `lastProductionDate`, `productionDays` |
+| `GET /api/wells/{npdWellBoreCode}/production` | Суточная добыча скважины: диапазон дат, сортировка, пагинация |
+| `GET /api/wells/{npdWellBoreCode}/production/{date}` | Одна запись за дату (`yyyy-MM-dd`) |
+
+Параметры выборки суточной добычи:
+
+| Параметр | По умолчанию | Описание |
+| --- | --- | --- |
+| `from` | — | Начало диапазона дат включительно, `yyyy-MM-dd` |
+| `to` | — | Конец диапазона дат включительно, `yyyy-MM-dd` |
+| `page` | `1` | Номер страницы, не меньше 1 |
+| `pageSize` | `100` | Размер страницы, 1..500 |
+| `sort` | `desc` | Порядок по дате: `desc` — сначала новые, `asc` — по возрастанию |
+
+Страница отдаётся конвертом: `items`, `totalCount`, `page`, `pageSize`, `totalPages`, `hasNextPage`, `hasPreviousPage`. Сортировка и `OFFSET/LIMIT` выполняются в SQL, `totalCount` считается отдельным запросом.
+
+Ошибки — в формате ProblemDetails (`application/problem+json`): `400` — несогласованные или недопустимые параметры (`from` больше `to`, `pageSize` вне 1..500, неизвестный `sort`, неверная дата), `404` — нет скважины или записи за дату, `500` — необработанное исключение.
+
+```bash
+curl http://localhost:5146/health
+curl http://localhost:5146/api/wells
+curl http://localhost:5146/api/wells/5351
+curl "http://localhost:5146/api/wells/5351/production?from=2016-01-01&to=2016-12-31&pageSize=50&sort=asc"
+curl http://localhost:5146/api/wells/5351/production/2016-01-01
+```
+
+## Смок-тест API
+
+Повторяемая проверка API на заполненной базе: health, список и карточка скважины, пагинация, фильтр по датам, обе сортировки, запись за дату, ответы `400`/`404`, доступность Swagger.
+
+```powershell
+powershell -File tests/smoke/webapi-smoke.ps1 -BaseUrl http://localhost:5146
+```
+
+Скрипт печатает результат каждой проверки и завершается с кодом `1`, если есть проваленные проверки; успешный прогон — 34 проверки и сообщение «Все проверки пройдены».
 
 ## Лицензия данных
 

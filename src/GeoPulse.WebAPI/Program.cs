@@ -4,6 +4,7 @@ using GeoPulse.Infrastructure;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -23,6 +24,9 @@ var connectionString = builder.Configuration.GetConnectionString("GeoPulse")
 builder.Services.AddGeoPulseInfrastructure(connectionString);
 
 var app = builder.Build();
+
+// Необработанные исключения отдаются клиенту как application/problem+json (RFC 7807).
+app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
 {

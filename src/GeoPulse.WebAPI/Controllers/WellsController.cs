@@ -1,47 +1,128 @@
-using GeoPulse.Infrastructure;
+using GeoPulse.Core.Repositories;
 using GeoPulse.WebAPI.Models;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace GeoPulse.WebAPI.Controllers
 {
-    /// <summary>Скважины из основной модели данных.</summary>
+    /// <summary>Скважины и их суточная добыча — точечные данные из PostgreSQL.</summary>
     [ApiController]
     [Route("api/[controller]")]
     [Produces("application/json")]
     public class WellsController : ControllerBase
     {
-        private readonly CoreDbContext _db;
+        private readonly IWellRepository _wells;
+        private readonly IDailyProductionRepository _production;
 
         /// <summary>Конструктор.</summary>
-        public WellsController(CoreDbContext db)
+        public WellsController(IWellRepository wells, IDailyProductionRepository production)
         {
-            _db = db;
+            _wells = wells;
+            _production = production;
         }
 
         /// <summary>Список скважин.</summary>
         /// <param name="cancellationToken">Токен отмены.</param>
         [HttpGet]
-        [ProducesResponseType(typeof(IEnumerable<WellDto>), StatusCodes.Status200OK)]
-        public async Task<IActionResult> GetWells(CancellationToken cancellationToken)
+        [ProducesResponseType(typeof(IReadOnlyList<WellDto>), StatusCodes.Status200OK)]
+        public async Task<ActionResult<IReadOnlyList<WellDto>>> GetWells(CancellationToken cancellationToken)
         {
-            var wells = await _db.Wells
-                .AsNoTracking()
-                .OrderBy(well => well.Name)
-                .ToListAsync(cancellationToken);
+            var wells = await _wells.GetAllAsync(cancellationToken);
 
-            var result = wells
-                .Select(well => new WellDto
-                {
-                    Id = well.Id,
-                    NpdWellBoreCode = well.NpdWellBoreCode,
-                    Name = well.Name,
-                    Field = well.Field,
-                    Type = well.Type
-                })
-                .ToList();
-
-            return Ok(result);
+            return Ok(wells.Select(WellDto.FromModel).ToList());
         }
+
+        /// <summary>Карточка скважины по коду НПД: справочные данные и покрытие добычей.</summary>
+        /// <param name="npdWellBoreCode">Код ствола в НПД (натуральный ключ).</param>
+        /// <param name="cancellationToken">Токен отмены.</param>
+        [HttpGet("{npdWellBoreCode:int}")]
+        [ProducesResponseType(typeof(WellDetailsDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<WellDetailsDto>> GetWell(
+            int npdWellBoreCode,
+            CancellationToken cancellationToken)
+        {
+            var well = await _wells.GetByNpdWellBoreCodeAsync(npdWellBoreCode, cancellationToken);
+            if (well is null)
+            {
+                return WellNotFound(npdWellBoreCode);
+            }
+
+            var coverage = await _production.GetCoverageAsync(well.Id, cancellationToken);
+
+            return Ok(WellDetailsDto.FromModel(well, coverage));
+        }
+
+        /// <summary>Суточная добыча скважины: фильтр по диапазону дат, сортировка и пагинация.</summary>
+        /// <param name="npdWellBoreCode">Код ствола в НПД (натуральный ключ).</param>
+        /// <param name="parameters">Диапазон дат, страница и порядок сортировки.</param>
+        /// <param name="cancellationToken">Токен отмены.</param>
+        [HttpGet("{npdWellBoreCode:int}/production")]
+        [ProducesResponseType(typeof(PagedResponse<ProductionRecordDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<PagedResponse<ProductionRecordDto>>> GetProduction(
+            int npdWellBoreCode,
+            [FromQuery] ProductionQueryParameters parameters,
+            CancellationToken cancellationToken)
+        {
+            foreach (var error in parameters.Validate())
+            {
+                ModelState.AddModelError(error.Key, error.Value);
+            }
+
+            if (!ModelState.IsValid)
+            {
+                return ValidationProblem(ModelState);
+            }
+
+            var well = await _wells.GetByNpdWellBoreCodeAsync(npdWellBoreCode, cancellationToken);
+            if (well is null)
+            {
+                return WellNotFound(npdWellBoreCode);
+            }
+
+            var page = await _production.GetPageAsync(well.Id, parameters.ToQuery(), cancellationToken);
+            var items = page.Items.Select(ProductionRecordDto.FromModel).ToList();
+
+            return Ok(PagedResponse<ProductionRecordDto>.Create(items, page.TotalCount, page.Page, page.PageSize));
+        }
+
+        /// <summary>Суточная добыча скважины за конкретную дату.</summary>
+        /// <param name="npdWellBoreCode">Код ствола в НПД (натуральный ключ).</param>
+        /// <param name="date">Дата в формате yyyy-MM-dd.</param>
+        /// <param name="cancellationToken">Токен отмены.</param>
+        [HttpGet("{npdWellBoreCode:int}/production/{date}")]
+        [ProducesResponseType(typeof(ProductionRecordDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<ProductionRecordDto>> GetProductionByDate(
+            int npdWellBoreCode,
+            DateOnly date,
+            CancellationToken cancellationToken)
+        {
+            var well = await _wells.GetByNpdWellBoreCodeAsync(npdWellBoreCode, cancellationToken);
+            if (well is null)
+            {
+                return WellNotFound(npdWellBoreCode);
+            }
+
+            var record = await _production.GetByDateAsync(well.Id, date, cancellationToken);
+            if (record is null)
+            {
+                return Problem(
+                    title: "Запись не найдена",
+                    detail: $"Для скважины {npdWellBoreCode} нет данных добычи за {date:yyyy-MM-dd}.",
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            return Ok(ProductionRecordDto.FromModel(record));
+        }
+
+        /// <summary>ProblemDetails для отсутствующей скважины.</summary>
+        private ObjectResult WellNotFound(int npdWellBoreCode) =>
+            Problem(
+                title: "Скважина не найдена",
+                detail: $"Скважина с кодом НПД {npdWellBoreCode} отсутствует в базе.",
+                statusCode: StatusCodes.Status404NotFound);
     }
 }
+
