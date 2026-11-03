@@ -4,6 +4,7 @@
 
 global using Xunit;
 
+global using GeoPulse.Aggregator;
 global using GeoPulse.CHIngest;
 global using GeoPulse.Consumer;
 global using GeoPulse.Core.Events;

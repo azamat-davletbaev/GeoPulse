@@ -109,7 +109,7 @@ namespace GeoPulse.Consumer
                             var wellId = await ResolveWellIdAsync(db, classification.Daily!.NpdWellBoreCode);
                             if (wellId is null)
                             {
-                                await PublishDlqAsync(dlqTopic, result, "well.not.found");
+                                await PublishDlqAsync(dlqTopic, result, DlqReasons.WellNotFound);
                                 counters.ToDlq++;
                                 consumer.Commit(result);
                                 break;
@@ -130,7 +130,7 @@ namespace GeoPulse.Consumer
                             var wellId = await ResolveWellIdAsync(db, classification.Trajectory!.NpdWellBoreCode);
                             if (wellId is null)
                             {
-                                await PublishDlqAsync(dlqTopic, result, "well.not.found");
+                                await PublishDlqAsync(dlqTopic, result, DlqReasons.WellNotFound);
                                 counters.ToDlq++;
                                 consumer.Commit(result);
                                 break;
@@ -145,7 +145,7 @@ namespace GeoPulse.Consumer
                         {
                             await FlushDailyBatchAsync(db, batch, consumer, counters);
 
-                            await PublishDlqAsync(dlqTopic, result, classification.Error ?? "invalid.event");
+                            await PublishDlqAsync(dlqTopic, result, classification.Error ?? DlqReasons.InvalidEvent);
                             counters.ToDlq++;
                             consumer.Commit(result);
                             break;
@@ -428,7 +428,7 @@ namespace GeoPulse.Consumer
         {
             if (string.IsNullOrWhiteSpace(raw))
             {
-                return new Classification(MessageKind.Invalid, null, null, null, "empty.message");
+                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.EmptyMessage);
             }
 
             EventHeader header;
@@ -438,12 +438,12 @@ namespace GeoPulse.Consumer
             }
             catch (JsonException)
             {
-                return new Classification(MessageKind.Invalid, null, null, null, "unparseable.json");
+                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.Malformed);
             }
 
             if (header.SchemaVersion != EventTypes.SchemaVersion)
             {
-                return new Classification(MessageKind.Invalid, null, null, null, "unknown.schemaVersion");
+                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownSchemaVersion);
             }
 
             switch (header.EventType)
@@ -454,12 +454,12 @@ namespace GeoPulse.Consumer
                     {
                         var evt = JsonSerializer.Deserialize<WellRegisteredEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
                             : new Classification(MessageKind.Well, evt.Data, null, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.well.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableWellEvent);
                     }
                 }
                 case EventTypes.ProductionDaily:
@@ -468,12 +468,12 @@ namespace GeoPulse.Consumer
                     {
                         var evt = JsonSerializer.Deserialize<DailyProductionEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
                             : new Classification(MessageKind.Daily, null, evt.Data, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.daily.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableDailyEvent);
                     }
                 }
                 case EventTypes.Trajectory:
@@ -482,16 +482,16 @@ namespace GeoPulse.Consumer
                     {
                         var evt = JsonSerializer.Deserialize<TrajectoryEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
                             : new Classification(MessageKind.Trajectory, null, null, evt.Data, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.trajectory.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableTrajectoryEvent);
                     }
                 }
                 default:
-                    return new Classification(MessageKind.Invalid, null, null, null, $"unknown.eventType:{header.EventType}");
+                    return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownEventTypeFor(header.EventType));
             }
         }
 

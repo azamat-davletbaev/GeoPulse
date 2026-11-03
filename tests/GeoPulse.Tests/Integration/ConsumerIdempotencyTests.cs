@@ -139,7 +139,7 @@ public sealed class ConsumerIdempotencyTests
 
             var dlqMessage = KafkaTestUtils.ConsumeOne(_fixture.KafkaBootstrapServers, dlqTopic);
             Assert.NotNull(dlqMessage);
-            Assert.Equal("well.not.found", KafkaTestUtils.GetHeader(dlqMessage.Message, "reason"));
+            Assert.Equal(DlqReasons.WellNotFound, KafkaTestUtils.GetHeader(dlqMessage.Message, "reason"));
             Assert.Equal(DailyJson(unknownCode, new DateOnly(2016, 3, 1)), dlqMessage.Message.Value);
         }
         finally

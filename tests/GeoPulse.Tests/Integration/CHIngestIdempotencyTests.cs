@@ -72,7 +72,7 @@ public sealed class CHIngestIdempotencyTests
 
             var dlqMessage = KafkaTestUtils.ConsumeOne(_fixture.KafkaBootstrapServers, dlqTopic);
             Assert.NotNull(dlqMessage);
-            Assert.Equal("unknown.well", KafkaTestUtils.GetHeader(dlqMessage.Message, "reason"));
+            Assert.Equal(DlqReasons.UnknownWell, KafkaTestUtils.GetHeader(dlqMessage.Message, "reason"));
         }
         finally
         {
@@ -80,6 +80,50 @@ public sealed class CHIngestIdempotencyTests
         }
 
         Assert.Equal(0, await ClickHouseDailyCountAsync(unknownCode, new DateOnly(2016, 3, 1)));
+    }
+
+    [Fact]
+    public async Task WellRegistered_ThenProductionDaily_ResolvesWithoutRestart()
+    {
+        const int sentinelCode = 5363;
+        const int npdCode = 5364;
+        var date = new DateOnly(2016, 2, 3);
+        var topic = $"production-daily-{Guid.NewGuid():N}";
+        var dlqTopic = $"production-daily-dlq-{Guid.NewGuid():N}";
+
+        // Sentinel уже в PostgreSQL до старта — попадает в стартовый кэш и служит
+        // маркером того, что сервис загрузил кэш и начал читать топик.
+        await InsertWellAsync(sentinelCode);
+        await KafkaTestUtils.CreateTopicAsync(_fixture.KafkaBootstrapServers, topic);
+        await KafkaTestUtils.CreateTopicAsync(_fixture.KafkaBootstrapServers, dlqTopic);
+
+        using var dlqProducer = KafkaTestUtils.BuildProducer(_fixture.KafkaBootstrapServers);
+        var service = BuildCHIngestService(topic, dlqTopic, dlqProducer);
+
+        try
+        {
+            // Старт на «пустой» для целевой скважины БД: npdCode в стартовом кэше отсутствует.
+            await service.StartAsync(CancellationToken.None);
+
+            await KafkaTestUtils.ProduceAsync(_fixture.KafkaBootstrapServers, topic, sentinelCode.ToString(), WellJson(sentinelCode));
+            await WaitUntilAsync(async () => await ClickHouseWellCountAsync(sentinelCode) == 1);
+
+            // Скважина появляется в PostgreSQL уже после загрузки кэша — как при порядке
+            // деплоя (сначала up -d, затем импорт).
+            await InsertWellAsync(npdCode);
+
+            await KafkaTestUtils.ProduceAsync(_fixture.KafkaBootstrapServers, topic, npdCode.ToString(), WellJson(npdCode));
+            await KafkaTestUtils.ProduceAsync(_fixture.KafkaBootstrapServers, topic, npdCode.ToString(), DailyJson(npdCode, date));
+
+            await WaitUntilAsync(async () => await ClickHouseDailyCountAsync(npdCode, date) == 1);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(1, await ClickHouseDailyCountAsync(npdCode, date));
+        Assert.Equal(1, await ClickHouseWellCountAsync(npdCode));
     }
 
     private CHIngestService BuildCHIngestService(string topic, string dlqTopic, IProducer<string, string> dlqProducer)
@@ -148,5 +192,22 @@ public sealed class CHIngestIdempotencyTests
                 Data = new DailyProductionData { NpdWellBoreCode = npdCode, Date = date, OilVol = 100.5 }
             },
             MessagingJson.Options);
+
+    private static string WellJson(int npdCode) =>
+        JsonSerializer.Serialize(
+            new WellRegisteredEvent
+            {
+                Data = new WellRegisteredData { NpdWellBoreCode = npdCode, Name = "W", Field = "Volve", Type = "OP" }
+            },
+            MessagingJson.Options);
+
+    private async Task<int> ClickHouseWellCountAsync(int npdCode)
+    {
+        await using var connection = new ClickHouseConnection(_fixture.ClickHouseConnectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT count() FROM gp.wells FINAL WHERE npd_well_bore_code = {npdCode}";
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
 }
 

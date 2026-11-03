@@ -27,6 +27,26 @@ namespace GeoPulse.Aggregator
             "days_count UInt64" +
             ") ENGINE = MergeTree ORDER BY (well_id, year, month)";
 
+        private const string CreateProductionDailySql =
+            "CREATE TABLE IF NOT EXISTS gp.production_daily (" +
+            "well_id UInt32," +
+            "npd_well_bore_code UInt32," +
+            "date Date," +
+            "oil_vol Float64," +
+            "gas_vol Float64," +
+            "water_vol Float64," +
+            "water_injection_vol Float64," +
+            "on_stream_hrs Float64," +
+            "avg_downhole_pressure Float64," +
+            "avg_downhole_temperature Float64," +
+            "avg_dp_tubing Float64," +
+            "avg_annulus_pressure Float64," +
+            "avg_choke_size Float64," +
+            "avg_whp Float64," +
+            "avg_wht Float64," +
+            "dp_choke_size Float64" +
+            ") ENGINE = ReplacingMergeTree ORDER BY (npd_well_bore_code, date)";
+
         private const string RebuildInsertSql =
             "INSERT INTO gp.monthly_production " +
             "SELECT well_id, toYear(date) AS year, toMonth(date) AS month, " +
@@ -62,12 +82,23 @@ namespace GeoPulse.Aggregator
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSeconds));
             do
             {
-                await RebuildAsync(connectionString, stoppingToken);
+                try
+                {
+                    await RebuildAsync(connectionString, stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Ошибка при пересчёте месячных агрегатов; следующий тик повторит попытку");
+                }
             }
             while (await timer.WaitForNextTickAsync(stoppingToken));
         }
 
-        /// <summary>Создаёт базу gp и таблицу monthly_production в ClickHouse.</summary>
+        /// <summary>Создаёт базу gp и таблицы monthly_production / production_daily в ClickHouse.</summary>
         private static async Task EnsureSchemaAsync(string connectionString, CancellationToken ct)
         {
             await using var connection = new ClickHouseConnection(connectionString);
@@ -78,6 +109,9 @@ namespace GeoPulse.Aggregator
             await command.ExecuteNonQueryAsync(ct);
 
             command.CommandText = CreateMonthlySql;
+            await command.ExecuteNonQueryAsync(ct);
+
+            command.CommandText = CreateProductionDailySql;
             await command.ExecuteNonQueryAsync(ct);
         }
 

@@ -127,15 +127,17 @@ namespace GeoPulse.CHIngest
                             await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
 
                             var well = classification.Well!;
-                            if (!wellIdsByNpd.TryGetValue(well.NpdWellBoreCode, out var wellId))
+                            var wellId = await ResolveWellIdAsync(
+                                postgresConnectionString, wellIdsByNpd, well.NpdWellBoreCode, stoppingToken);
+                            if (wellId is null)
                             {
-                                await PublishDlqAsync(dlqTopic, result, "unknown.well");
+                                await PublishDlqAsync(dlqTopic, result, DlqReasons.UnknownWell);
                                 counters.ToDlq++;
                                 consumer.Commit(result);
                                 break;
                             }
 
-                            await InsertWellAsync(clickHouseConnectionString, well, wellId, stoppingToken);
+                            await InsertWellAsync(clickHouseConnectionString, well, wellId.Value, stoppingToken);
                             counters.Wells++;
                             consumer.Commit(result);
                             break;
@@ -144,15 +146,17 @@ namespace GeoPulse.CHIngest
                         case MessageKind.Daily:
                         {
                             var daily = classification.Daily!;
-                            if (!wellIdsByNpd.TryGetValue(daily.NpdWellBoreCode, out var wellId))
+                            var wellId = await ResolveWellIdAsync(
+                                postgresConnectionString, wellIdsByNpd, daily.NpdWellBoreCode, stoppingToken);
+                            if (wellId is null)
                             {
-                                await PublishDlqAsync(dlqTopic, result, "unknown.well");
+                                await PublishDlqAsync(dlqTopic, result, DlqReasons.UnknownWell);
                                 counters.ToDlq++;
                                 consumer.Commit(result);
                                 break;
                             }
 
-                            batch.Add(ToDailyRow(wellId, daily));
+                            batch.Add(ToDailyRow(wellId.Value, daily));
 
                             if (batch.Count >= batchSize)
                             {
@@ -175,7 +179,7 @@ namespace GeoPulse.CHIngest
                         {
                             await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
 
-                            await PublishDlqAsync(dlqTopic, result, classification.Error ?? "invalid.event");
+                            await PublishDlqAsync(dlqTopic, result, classification.Error ?? DlqReasons.InvalidEvent);
                             counters.ToDlq++;
                             consumer.Commit(result);
                             break;
@@ -235,6 +239,38 @@ namespace GeoPulse.CHIngest
             }
 
             return result;
+        }
+
+        /// <summary>Резолвит well_id по натуральному ключу: кэш → точечный запрос в PostgreSQL.</summary>
+        private async Task<int?> ResolveWellIdAsync(
+            string connectionString,
+            Dictionary<int, int> cache,
+            int npdWellBoreCode,
+            CancellationToken ct)
+        {
+            if (cache.TryGetValue(npdWellBoreCode, out var cached))
+            {
+                return cached;
+            }
+
+            _logger.LogDebug("Промах кэша скважин: точечный запрос well_id для npdWellBoreCode={Code}", npdWellBoreCode);
+
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync(ct);
+            await using var command = new NpgsqlCommand(
+                "SELECT id FROM wells WHERE npd_well_bore_code = @code", connection);
+            command.Parameters.AddWithValue("@code", npdWellBoreCode);
+
+            var result = await command.ExecuteScalarAsync(ct);
+            if (result is null || result is DBNull)
+            {
+                return null;
+            }
+
+            var wellId = Convert.ToInt32(result, CultureInfo.InvariantCulture);
+            cache[npdWellBoreCode] = wellId;
+            _logger.LogInformation("Кэш скважин догружен: npdWellBoreCode={Code} → well_id={WellId}", npdWellBoreCode, wellId);
+            return wellId;
         }
 
         /// <summary>Сбрасывает батч добычи одним INSERT-ом и коммитит офсеты всех партиций.</summary>
@@ -403,7 +439,7 @@ namespace GeoPulse.CHIngest
         {
             if (string.IsNullOrWhiteSpace(raw))
             {
-                return new Classification(MessageKind.Invalid, null, null, null, "empty.message");
+                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.EmptyMessage);
             }
 
             EventHeader header;
@@ -413,12 +449,12 @@ namespace GeoPulse.CHIngest
             }
             catch (JsonException)
             {
-                return new Classification(MessageKind.Invalid, null, null, null, "unparseable.json");
+                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.Malformed);
             }
 
             if (header.SchemaVersion != EventTypes.SchemaVersion)
             {
-                return new Classification(MessageKind.Invalid, null, null, null, "unknown.schemaVersion");
+                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownSchemaVersion);
             }
 
             switch (header.EventType)
@@ -429,12 +465,12 @@ namespace GeoPulse.CHIngest
                     {
                         var evt = JsonSerializer.Deserialize<WellRegisteredEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
                             : new Classification(MessageKind.Well, evt.Data, null, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.well.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableWellEvent);
                     }
                 }
 
@@ -444,12 +480,12 @@ namespace GeoPulse.CHIngest
                     {
                         var evt = JsonSerializer.Deserialize<DailyProductionEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
                             : new Classification(MessageKind.Daily, null, evt.Data, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.daily.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableDailyEvent);
                     }
                 }
 
@@ -460,17 +496,17 @@ namespace GeoPulse.CHIngest
                     {
                         var evt = JsonSerializer.Deserialize<TrajectoryEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
                             : new Classification(MessageKind.Trajectory, null, null, evt.Data, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.trajectory.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableTrajectoryEvent);
                     }
                 }
 
                 default:
-                    return new Classification(MessageKind.Invalid, null, null, null, $"unknown.eventType:{header.EventType}");
+                    return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownEventTypeFor(header.EventType));
             }
         }
 

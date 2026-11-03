@@ -74,9 +74,9 @@ public sealed class EventClassificationTests
     [MemberData(nameof(ServiceTypes))]
     public void Classify_NullOrWhitespace_ReturnsEmptyMessage(Type serviceType)
     {
-        Assert.Equal("empty.message", Error(Classify(serviceType, null)));
-        Assert.Equal("empty.message", Error(Classify(serviceType, string.Empty)));
-        Assert.Equal("empty.message", Error(Classify(serviceType, "   ")));
+        Assert.Equal(DlqReasons.EmptyMessage, Error(Classify(serviceType, null)));
+        Assert.Equal(DlqReasons.EmptyMessage, Error(Classify(serviceType, string.Empty)));
+        Assert.Equal(DlqReasons.EmptyMessage, Error(Classify(serviceType, "   ")));
     }
 
     [Theory]
@@ -86,7 +86,7 @@ public sealed class EventClassificationTests
         var result = Classify(serviceType, "{not-valid-json");
 
         Assert.Equal("Invalid", Kind(result));
-        Assert.Equal("unparseable.json", Error(result));
+        Assert.Equal(DlqReasons.Malformed, Error(result));
     }
 
     [Theory]
@@ -96,7 +96,7 @@ public sealed class EventClassificationTests
         var result = Classify(serviceType, "{\"eventType\":\"production.daily\",\"schemaVersion\":2}");
 
         Assert.Equal("Invalid", Kind(result));
-        Assert.Equal("unknown.schemaVersion", Error(result));
+        Assert.Equal(DlqReasons.UnknownSchemaVersion, Error(result));
     }
 
     [Theory]
@@ -106,7 +106,7 @@ public sealed class EventClassificationTests
         var result = Classify(serviceType, "{\"eventType\":\"foo.bar\",\"schemaVersion\":1}");
 
         Assert.Equal("Invalid", Kind(result));
-        Assert.Equal("unknown.eventType:foo.bar", Error(result));
+        Assert.Equal(DlqReasons.UnknownEventTypeFor("foo.bar"), Error(result));
     }
 
     [Theory]
@@ -116,7 +116,7 @@ public sealed class EventClassificationTests
         var result = Classify(serviceType, "{\"eventType\":\"production.daily\",\"schemaVersion\":1,\"data\":null}");
 
         Assert.Equal("Invalid", Kind(result));
-        Assert.Equal("missing.data", Error(result));
+        Assert.Equal(DlqReasons.MissingData, Error(result));
     }
 
     [Theory]
@@ -187,6 +187,6 @@ public sealed class EventClassificationTests
         var result = Classify(serviceType, "{\"eventType\":\"production.daily\",\"schemaVersion\":1,\"data\":123}");
 
         Assert.Equal("Invalid", Kind(result));
-        Assert.Equal("unparseable.daily.event", Error(result));
+        Assert.Equal(DlqReasons.UnparseableDailyEvent, Error(result));
     }
 }
