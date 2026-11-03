@@ -75,7 +75,7 @@ sudo systemctl reload ssh
 
 ```bash
 sudo ufw allow OpenSSH   # 22
-sudo ufw allow 80/tcp    # HTTP  — сертификат Let's Encrypt и резервный вход по IP (http://45.12.4.88)
+sudo ufw allow 80/tcp    # HTTP  — сертификат Let's Encrypt и резервный вход по IP (IP сервера из FALLBACK_IP)
 sudo ufw allow 443/tcp   # HTTPS — основной трафик
 sudo ufw --force enable
 sudo ufw status verbose
@@ -146,7 +146,20 @@ docker compose -f docker-compose.prod.yml run --rm ingestion
 
 # 4) Дождаться, пока consumer/chingest/aggregator обработают события
 #    (aggregator пересобирает gp.monthly_production каждые 60 с):
-sleep 90
+rows=0
+for attempt in $(seq 1 10); do
+  rows=$(docker exec geopulse-clickhouse clickhouse-client --query "SELECT count() FROM gp.monthly_production" 2>/dev/null | tr -d '[:space:]')
+  rows=${rows:-0}
+  if [ "$rows" -gt 0 ]; then
+    echo "Готово: в gp.monthly_production ${rows} строк (попытка ${attempt}/10)"
+    break
+  fi
+  echo "Попытка ${attempt}/10: агрегатов пока нет, ждём 10 с..."
+  sleep 10
+done
+if [ "${rows:-0}" -eq 0 ]; then
+  echo "ВНИМАНИЕ: агрегатор ещё не собрал данные, проверьте логи chingest/aggregator" >&2
+fi
 
 # 5) Сид координат устьев (нужен для маркеров на карте):
 docker exec -i geopulse-postgres psql -U "${POSTGRES_USER:-geopulse}" -d "${POSTGRES_DB:-geopulse_core}" < seed_well_locations.sql
@@ -162,14 +175,14 @@ docker exec geopulse-postgres psql -U geopulse -d geopulse_core -c "SELECT count
 # по домену (HTTPS, сертификат Let's Encrypt)
 curl -s https://geopulse-demo.duckdns.org/api/Analytics/summary
 # по IP (резервный вход по HTTP, без сертификата)
-curl -s http://45.12.4.88/api/Analytics/summary
+curl -s "http://$FALLBACK_IP/api/Analytics/summary"
 ```
 
 Проверка доступа к фронту — отдельно по домену и по IP, у обоих должен быть `200`:
 
 ```bash
 curl -s -o /dev/null -w 'по домену: %{http_code}\n' https://geopulse-demo.duckdns.org/
-curl -s -o /dev/null -w 'по IP:     %{http_code}\n' http://45.12.4.88/
+curl -s -o /dev/null -w 'по IP:     %{http_code}\n' "http://$FALLBACK_IP/"
 ```
 
 Порядок важен: сначала оба читателя (consumer, chingest) и агрегатор должны быть
@@ -179,8 +192,11 @@ PostgreSQL идемпотентна (`ON CONFLICT DO NOTHING`), ClickHouse де�
 
 > Caddy автоматически выпустит сертификат Let's Encrypt для `DOMAIN`. Для этого
 > домен должен указывать на IP сервера (DuckDNS), а порты 80/443 должны быть открыты.
-> Параллельно Caddy обслуживает резервный вход по «голому» IP — блок
-> `http://45.12.4.88` в `Caddyfile` (без сертификата, по порту 80).
+> Параллельно Caddy обслуживает резервный вход по «голому» IP — этот вход
+> обслуживается блоком `http://{$FALLBACK_IP}` в `Caddyfile` (без сертификата, по
+> порту 80) и требует заполненной переменной `FALLBACK_IP` в `.env` (IP сервера).
+> Если `FALLBACK_IP` пуста, блок остаётся валидным, но превращается в catch-all
+> на порту 80 (обслуживает любой Host).
 
 ---
 

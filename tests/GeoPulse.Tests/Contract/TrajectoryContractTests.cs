@@ -5,7 +5,7 @@ namespace GeoPulse.Tests.Contract;
 
 /// <summary>
 /// Контрактные тесты новых эндпоинтов этапа 7: GET /api/wells (добавочные поля забоя tdMd/tdTvd)
-/// и GET /api/Wells/{wellId}/trajectory (замеры в WGS84). Проверяются через TestServer с in-memory стабами.
+/// и GET /api/wells/{wellId}/trajectory (замеры в WGS84). Проверяются через TestServer с in-memory стабами.
 /// </summary>
 public sealed class TrajectoryContractTests
 {
@@ -79,7 +79,7 @@ public sealed class TrajectoryContractTests
 
         try
         {
-            var response = await client.GetAsync("/api/Wells/1/trajectory");
+            var response = await client.GetAsync("/api/wells/1/trajectory");
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
             var body = await response.Content.ReadAsStringAsync();
@@ -104,7 +104,7 @@ public sealed class TrajectoryContractTests
 
         try
         {
-            var response = await client.GetAsync("/api/Wells/999/trajectory");
+            var response = await client.GetAsync("/api/wells/999/trajectory");
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
             var body = await response.Content.ReadAsStringAsync();
@@ -132,7 +132,7 @@ public sealed class TrajectoryContractTests
 
         try
         {
-            var response = await client.GetAsync("/api/Wells/1/trajectory");
+            var response = await client.GetAsync("/api/wells/1/trajectory");
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
             var body = await response.Content.ReadAsStringAsync();

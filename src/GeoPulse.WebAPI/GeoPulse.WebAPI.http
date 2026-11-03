@@ -1,16 +1,30 @@
 @GeoPulse_HostAddress = http://localhost:5146
 
-GET {{GeoPulse_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
-
-# Скважины из PostgreSQL
+# Скважины из PostgreSQL (список с координатами устья и забойными глубинами)
 GET {{GeoPulse_HostAddress}}/api/wells
 Accept: application/json
 
 ###
 
-# Витрина добычи (демонстрационные данные контроллера)
-GET {{GeoPulse_HostAddress}}/api/production/wells
+# Траектория ствола (wellId — из ответа первого запроса)
+GET {{GeoPulse_HostAddress}}/api/wells/{wellId}/trajectory
 Accept: application/json
+
+###
+
+# Аналитика из ClickHouse: суммарная добыча по месторождению
+GET {{GeoPulse_HostAddress}}/api/Analytics/summary
+Accept: application/json
+
+###
+
+# Аналитика из ClickHouse: помесячные агрегаты одной скважины (wellId — из первого запроса)
+GET {{GeoPulse_HostAddress}}/api/Analytics/monthly?wellId={wellId}
+Accept: application/json
+
+###
+
+# Excel-отчёт по одной скважине (wellId — из первого запроса)
+GET {{GeoPulse_HostAddress}}/api/Reports/wells/{wellId}.xlsx
+Accept: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+

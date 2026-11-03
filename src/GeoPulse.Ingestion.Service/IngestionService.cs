@@ -206,13 +206,6 @@ namespace GeoPulse.Ingestion.Service
                 "Публикация завершена: прочитано строк {Read}, пропущено (пустой ключ) {Skipped}, опубликовано well.registered {Wells}, well.trajectory {Trajectory}, production.daily {Daily}",
                 rowsRead, rowsSkippedNullKey, wellEvents, trajectoryEvents, dailyEvents);
 
-            Console.WriteLine();
-            Console.WriteLine("=== ИТОГОВАЯ СТАТИСТИКА ===");
-            Console.WriteLine($"Прочитано строк:              {rowsRead}");
-            Console.WriteLine($"Пропущено (пустой ключ):      {rowsSkippedNullKey}");
-            Console.WriteLine($"Опубликовано well.registered: {wellEvents}");
-            Console.WriteLine($"Опубликовано well.trajectory: {trajectoryEvents}");
-            Console.WriteLine($"Опубликовано production.daily: {dailyEvents}");
         }
 
         /// <summary>Сериализует и публикует событие в топик с ключом = NPD-код ствола.</summary>

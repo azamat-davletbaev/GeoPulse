@@ -165,14 +165,14 @@ $byDate = $byDateResponse.Body | ConvertFrom-Json
 Assert-Equal $date $byDate.date 'запись соответствует запрошенной дате'
 
 # 6b. Траектория ствола (этап 7): замеры в WGS84 и 404 для неизвестной скважины.
-$trajectoryResponse = Invoke-Api "/api/Wells/$($wells[0].wellId)/trajectory"
-Assert-Equal 200 $trajectoryResponse.Status 'GET /api/Wells/{wellId}/trajectory -> 200'
+$trajectoryResponse = Invoke-Api "/api/wells/$($wells[0].wellId)/trajectory"
+Assert-Equal 200 $trajectoryResponse.Status 'GET /api/wells/{wellId}/trajectory -> 200'
 $trajectory = @($trajectoryResponse.Body | ConvertFrom-Json)
 Assert-True ($trajectory.Count -gt 0) "траектория содержит замеры (count=$($trajectory.Count))"
 Assert-True ($null -ne $trajectory[0].latitude -and $null -ne $trajectory[0].longitude) 'замеры траектории в WGS84 (latitude/longitude)'
 
-$unknownTrajectory = Invoke-Api '/api/Wells/999999/trajectory'
-Assert-Equal 404 $unknownTrajectory.Status 'GET /api/Wells/999999/trajectory (нет скважины) -> 404'
+$unknownTrajectory = Invoke-Api '/api/wells/999999/trajectory'
+Assert-Equal 404 $unknownTrajectory.Status 'GET /api/wells/999999/trajectory (нет скважины) -> 404'
 
 # 7. Ошибки: 404
 $unknownWell = Invoke-Api '/api/wells/1'

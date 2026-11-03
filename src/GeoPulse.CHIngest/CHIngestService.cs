@@ -12,7 +12,7 @@ using Npgsql;
 namespace GeoPulse.CHIngest
 {
     /// <summary>
-    /// Третий читатель топика production-daily: пишет сырые данные в ClickHouse
+    /// Второй читатель топика production-daily: пишет сырые данные в ClickHouse
     /// (база gp, таблицы wells и production_daily на движке ReplacingMergeTree).
     /// Дедупликация дубликатов топика — средствами ReplacingMergeTree (чтение через FINAL),
     /// без дедупов в памяти. Резолв npdWellBoreCode → well_id — по PostgreSQL wells (кэш на старте).
