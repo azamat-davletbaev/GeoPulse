@@ -118,4 +118,91 @@ public sealed class ReportServiceTests
         Assert.StartsWith("2016,1,300.00,150.00,", lines[1].TrimEnd('\r'));
         Assert.StartsWith("2016,2,0.00,0.00,", lines[2].TrimEnd('\r'));
     }
+
+    [Fact]
+    public async Task LoadWellAsync_UnknownWell_ReturnsNull()
+    {
+        var data = await CreateService().LoadWellAsync(999, CancellationToken.None);
+
+        Assert.Null(data);
+    }
+
+    [Fact]
+    public async Task LoadWellAsync_ComputesTotalsWaterCutPeriodAndShare()
+    {
+        var data = await CreateService().LoadWellAsync(1, CancellationToken.None);
+
+        Assert.NotNull(data);
+        Assert.Equal("Well A", data.Name);
+        Assert.Equal("Volve", data.Field);
+
+        // Только строки скважины 1: январь (100/50) и февраль (0/0).
+        Assert.Equal(2, data.Monthly.Count);
+        Assert.Equal(100, data.TotalOilVol, 3);
+        Assert.Equal(50, data.TotalWaterVol, 3);
+        Assert.Equal("2016-01 — 2016-02", data.Period);
+
+        // Обводнённость и доля — те же формулы, что и в отчёте по месторождению.
+        Assert.Equal(33.333, data.Monthly[0].WaterCutPct, 3);
+        Assert.Equal(0, data.Monthly[1].WaterCutPct, 3);
+        Assert.Equal(33.333, data.SharePct, 3);
+    }
+
+    [Fact]
+    public async Task BuildWellXlsx_HasTwoSheets_WithExpectedHeaders()
+    {
+        var data = await CreateService().LoadWellAsync(1, CancellationToken.None);
+        var bytes = CreateService().BuildWellXlsx(data!);
+
+        using var stream = new MemoryStream(bytes);
+        using var workbook = new XLWorkbook(stream);
+
+        Assert.Equal(2, workbook.Worksheets.Count);
+        Assert.Equal("Скважина", workbook.Worksheet(1).Name);
+        Assert.Equal("Помесячно", workbook.Worksheet(2).Name);
+
+        var well = workbook.Worksheet("Скважина");
+        Assert.Equal("Показатель", well.Cell(1, 1).GetString());
+        Assert.Equal("Значение", well.Cell(1, 2).GetString());
+        Assert.Equal("Скважина", well.Cell(2, 1).GetString());
+        Assert.Equal("Well A", well.Cell(2, 2).GetString());
+        Assert.Equal("Месторождение", well.Cell(3, 1).GetString());
+        Assert.Equal("Суммарная нефть, м³", well.Cell(4, 1).GetString());
+        Assert.Equal("Суммарная вода, м³", well.Cell(5, 1).GetString());
+        Assert.Equal("Период", well.Cell(6, 1).GetString());
+        Assert.Equal("Доля от добычи месторождения, %", well.Cell(7, 1).GetString());
+
+        var monthly = workbook.Worksheet("Помесячно");
+        Assert.Equal("Год", monthly.Cell(1, 1).GetString());
+        Assert.Equal("Месяц", monthly.Cell(1, 2).GetString());
+        Assert.Equal("Нефть, м³", monthly.Cell(1, 3).GetString());
+        Assert.Equal("Вода, м³", monthly.Cell(1, 4).GetString());
+        Assert.Equal("Обводнённость, %", monthly.Cell(1, 5).GetString());
+    }
+
+    [Fact]
+    public async Task BuildWellXlsx_OilSums_MatchControlSum()
+    {
+        var data = await CreateService().LoadWellAsync(1, CancellationToken.None);
+        var bytes = CreateService().BuildWellXlsx(data!);
+
+        using var stream = new MemoryStream(bytes);
+        using var workbook = new XLWorkbook(stream);
+
+        // Обратный парсинг: сумма помесячной нефти должна совпасть с итогом на листе «Скважина».
+        var monthly = workbook.Worksheet("Помесячно");
+        var lastRow = monthly.LastRowUsed()!.RowNumber();
+        var monthlyOil = 0.0;
+        for (var row = 2; row <= lastRow; row++)
+        {
+            monthlyOil += monthly.Cell(row, 3).GetDouble();
+        }
+
+        var well = workbook.Worksheet("Скважина");
+        Assert.Equal(100, monthlyOil, 3);
+        Assert.Equal(monthlyOil, well.Cell(4, 2).GetDouble(), 3);
+        Assert.Equal(50, well.Cell(5, 2).GetDouble(), 3);
+        Assert.Equal(33.333, well.Cell(7, 2).GetDouble(), 3);
+        Assert.Equal("2016-01 — 2016-02", well.Cell(6, 2).GetString());
+    }
 }

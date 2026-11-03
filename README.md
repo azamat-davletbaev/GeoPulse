@@ -148,7 +148,7 @@ docker exec -i geopulse-postgres psql -U geopulse -d geopulse_core < sql/seed_we
 | `SELECT count() FROM gp.wells FINAL` | 7 |
 | `SELECT count() FROM gp.monthly_production` | 526 |
 | `GET /api/Analytics/summary` → `totalOilVol` | ≈ 10 037 080.61 |
-| Смок-тест API | 34 проверки из 34 |
+| Смок-тест API | 44 проверки из 44 |
 
 ## REST API: точечные данные и аналитика
 
@@ -165,6 +165,7 @@ API отдаёт точечные данные из PostgreSQL, а аналит�
 | `GET /api/Analytics/summary` | Суммарная добыча по всем скважинам за всё время: один SQL-запрос к `gp.monthly_production` (ClickHouse) |
 | `GET /api/Reports/monthly.xlsx` | Excel-отчёт по месторождению (ClosedXML): листы «Сводка», «Помесячно», «По скважинам»; `Content-Disposition: attachment`, имя файла с датой |
 | `GET /api/Reports/monthly.csv` | Тот же помесячный набор в CSV (запятая, BOM, заголовки на английском), без внешних библиотек |
+| `GET /api/Reports/wells/{wellId}.xlsx` | Excel-отчёт по одной скважине: листы «Скважина» (имя, месторождение, суммарные нефть/вода, период, доля) и «Помесячно»; `404` для неизвестного `wellId` |
 
 Параметры выборки суточной добычи:
 
@@ -192,13 +193,13 @@ curl http://localhost:5146/api/Analytics/summary
 
 ## Смок-тест API
 
-Повторяемая проверка API на заполненной базе: health, список и карточка скважины, пагинация, фильтр по датам, обе сортировки, запись за дату, ответы `400`/`404`, доступность Swagger.
+Повторяемая проверка API на заполненной базе: health, список и карточка скважины, пагинация, фильтр по датам, обе сортировки, запись за дату, ответы `400`/`404`, отчёты (сводный `monthly.xlsx` и персональный `wells/{wellId}.xlsx`), доступность Swagger.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tests/smoke/webapi-smoke.ps1 -BaseUrl http://localhost:5146
 ```
 
-Скрипт печатает результат каждой проверки и завершается с кодом `1`, если есть проваленные проверки; успешный прогон — 34 проверки и сообщение «Все проверки пройдены: 34». `-ExecutionPolicy Bypass` нужен, если в системе запрещено выполнение локальных скриптов.
+Скрипт печатает результат каждой проверки и завершается с кодом `1`, если есть проваленные проверки; успешный прогон — 44 проверки и сообщение «Все проверки пройдены: 44». `-ExecutionPolicy Bypass` нужен, если в системе запрещено выполнение локальных скриптов.
 
 ## Известные ограничения
 
@@ -206,6 +207,7 @@ powershell -ExecutionPolicy Bypass -File tests/smoke/webapi-smoke.ps1 -BaseUrl h
 - **ClickHouse не самодостаточен: справочник скважин резолвится через PostgreSQL.** CHIngest строит кэш `npdWellBoreCode → well_id` по таблице `wells` в PostgreSQL на старте; при расхождении справочников событие уходит в DLQ как `unknown.well`.
 - **Kafka без volume.** У брокера нет persistent volume: после `docker compose down -v` топики и офсеты групп пропадают. Их нужно создавать заново (шаг 2 раздела «Запуск»), а читатели начнут с начала потока.
 - **Aggregator и CHIngest запускаются локально** (`dotnet run`), в compose их нет — контейнеризованы только `consumer` и `webapi`. Поэтому в их `appsettings.json` ClickHouse и PostgreSQL указаны как `localhost`. При контейнеризации понадобятся собственные переменные окружения (`ClickHouse__ConnectionString` с `Host=clickhouse`, `ConnectionStrings__CoreDb` с `Host=postgres`) и `depends_on` на готовность `postgres`/`clickhouse`.
+- **Глубина забоя (TD) в попапе скважины не показывается.** Значения есть в текстовых заголовках траекторий `data/Volve_Well_technical_data/WellWellbore/**` (`Bottom Hole MD`, `Bottom Hole TVD`), но ни в `wells`, ни в `well_locations` их нет, а публичного поля в `GET /api/wells` — тоже. Чтобы показать TD без выдумывания чисел, нужны колонки в БД, сид и расширение контракта `WellDto`; это делается на этапе 7 вместе с загрузкой траекторий WITSML.
 
 ## Этапы
 
@@ -215,8 +217,8 @@ powershell -ExecutionPolicy Bypass -File tests/smoke/webapi-smoke.ps1 -BaseUrl h
 | 2. Пайплайн Kafka | закрыт | Ingestion публикует `well.registered` и `production.daily`; Consumer идемпотентно пишет в PostgreSQL; DLQ проверена. |
 | 3. REST API | закрыт | Список и карточка скважины, суточная добыча с фильтрами, сортировкой и пагинацией, health, ProblemDetails, Swagger. |
 | 4. Аналитика на ClickHouse | закрыт | CHIngest (сырые события в `gp`, `ReplacingMergeTree`, чтение `FINAL`) и Aggregator (пересборка `gp.monthly_production` по таймеру), `/api/Analytics/*` из ClickHouse. Контрольные числа: 15 634 строки добычи, 7 скважин, 526 агрегатов, `totalOilVol` ≈ 10 037 080.61. |
-| 5. Веб-клиент с картой | закрыт | Статический фронт `web/` (Leaflet + Chart.js, раздаётся WebAPI), координаты устьев из WITSML (ED50→WGS84 EPSG:1613) в `well_locations`, `GET /api/Wells` с `well_id`/`latitude`/`longitude`, `GET /api/Analytics/monthly?wellId`. |
-| 6. Отчёты | закрыт | `GET /api/Reports/monthly.xlsx` (листы «Сводка», «Помесячно», «По скважинам», ClosedXML, жирная шапка, автоширина, формат `#,##0.00`) и `monthly.csv` (BOM, запятая). `ReportService` с юнит-тестами структуры xlsx (число листов, колонки, контрольная сумма). Контроль: суммарная нефть ≈ 10 037 080.61. |
+| 5. Веб-клиент с картой | закрыт | Статический фронт `web/` (Leaflet + Chart.js, раздаётся WebAPI), координаты устьев из WITSML (ED50→WGS84 EPSG:1613) в `well_locations`, `GET /api/Wells` с `well_id`/`latitude`/`longitude`, `GET /api/Analytics/monthly?wellId`. При открытии страницы автоматически выбирается первая добывающая скважина (попап и панель с графиком открыты сразу); попап показывает суммарные нефть и воду, обводнённость последнего месяца с добычей, пик добычи, период работы и долю в добыче месторождения. |
+| 6. Отчёты | закрыт | `GET /api/Reports/monthly.xlsx` (листы «Сводка», «Помесячно», «По скважинам», ClosedXML, жирная шапка, автоширина, формат `#,##0.00`) и `monthly.csv` (BOM, запятая). `ReportService` с юнит-тестами структуры xlsx (число листов, колонки, контрольная сумма). Дополнительно — `GET /api/Reports/wells/{wellId}.xlsx` (листы «Скважина», «Помесячно») и ссылка «Скачать отчёт (Excel)» в попапе скважины. Контроль: суммарная нефть ≈ 10 037 080.61. |
 | 7. WITSML-данные | план | Траектории, перфорации и пики из `Volve_Well_technical_data`. |
 | 8. Деплой на VPS | план | Развёртывание стека на удалённом сервере. |
 

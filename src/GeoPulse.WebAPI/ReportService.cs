@@ -14,6 +14,9 @@ namespace GeoPulse.WebAPI
     /// </summary>
     public sealed class ReportService
     {
+        /// <summary>Единый числовой формат всех отчётов (`#,##0.00`).</summary>
+        private const string NumberFormat = "#,##0.00";
+
         private readonly IWellRepository _wells;
         private readonly IMonthlyProductionReader _analytics;
 
@@ -71,6 +74,54 @@ namespace GeoPulse.WebAPI
         }
 
         /// <summary>
+        /// Загружает данные для отчёта по одной скважине: справочные поля — из PostgreSQL,
+        /// помесячная добыча — из ClickHouse. Обводнённость и доля считаются здесь же, теми же
+        /// функциями, что и в отчёте по месторождению. Возвращает null, если скважины нет.
+        /// </summary>
+        /// <param name="wellId">Внутренний идентификатор скважины (wells.Id).</param>
+        /// <param name="cancellationToken">Токен отмены.</param>
+        public async Task<WellReportData?> LoadWellAsync(int wellId, CancellationToken cancellationToken)
+        {
+            var well = await _wells.GetByIdAsync(wellId, cancellationToken);
+            if (well is null)
+            {
+                return null;
+            }
+
+            var monthly = await _analytics.GetAllMonthlyAsync(cancellationToken);
+            var summary = await _analytics.GetSummaryAsync(cancellationToken);
+
+            // Помесячные строки уже уникальны в разрезе (well_id, year, month), поэтому
+            // группировка не нужна — достаточно отфильтровать и упорядочить.
+            var rows = monthly
+                .Where(item => item.WellId == wellId)
+                .OrderBy(item => item.Year)
+                .ThenBy(item => item.Month)
+                .ToList();
+
+            var oil = rows.Sum(item => item.OilVolSum);
+            var water = rows.Sum(item => item.WaterVolSum);
+
+            var monthlyRows = rows
+                .Select(item => new MonthlyReportRow(
+                    item.Year,
+                    item.Month,
+                    item.OilVolSum,
+                    item.WaterVolSum,
+                    WaterCutPct(item.OilVolSum, item.WaterVolSum)))
+                .ToList();
+
+            return new WellReportData(
+                well.Name,
+                well.Field,
+                oil,
+                water,
+                BuildPeriod(rows),
+                SharePct(oil, summary.TotalOilVol),
+                monthlyRows);
+        }
+
+        /// <summary>
         /// Генерация XLSX-файла. Сознательно без ArrayPool и без параллелизации расчётов: текущий
         /// объём — сотни строк (526 агрегатов), выгрузка укладывается в единицы миллисекунд.
         /// Порог оправданности оптимизаций — порядка 10^5 строк и выше, когда аллокации буферов
@@ -81,8 +132,25 @@ namespace GeoPulse.WebAPI
         {
             using var workbook = new XLWorkbook();
             BuildSummarySheet(workbook, data);
-            BuildMonthlySheet(workbook, data);
+            BuildMonthlySheet(workbook, "Помесячно", data.Monthly);
             BuildWellsSheet(workbook, data);
+
+            using var stream = new MemoryStream();
+            workbook.SaveAs(stream);
+            return stream.ToArray();
+        }
+
+        /// <summary>
+        /// Генерация XLSX-отчёта по одной скважине: листы «Скважина» (справочные поля и итоги)
+        /// и «Помесячно». Лист «Помесячно» и стили строятся теми же функциями, что и в отчёте
+        /// по месторождению, — формат ячеек и шапки совпадает.
+        /// </summary>
+        /// <param name="data">Подготовленные данные скважины.</param>
+        public byte[] BuildWellXlsx(WellReportData data)
+        {
+            using var workbook = new XLWorkbook();
+            BuildWellSheet(workbook, data);
+            BuildMonthlySheet(workbook, "Помесячно", data.Monthly);
 
             using var stream = new MemoryStream();
             workbook.SaveAs(stream);
@@ -122,16 +190,44 @@ namespace GeoPulse.WebAPI
             sheet.Cell(5, 1).Value = "Число скважин";
             sheet.Cell(5, 2).Value = data.WellCount;
 
-            sheet.Range(1, 1, 1, 2).Style.Font.Bold = true;
-            sheet.Cell(2, 2).Style.NumberFormat.Format = "#,##0.00";
-            sheet.Cell(3, 2).Style.NumberFormat.Format = "#,##0.00";
+            StyleHeader(sheet.Range(1, 1, 1, 2));
+            StyleNumbers(sheet.Cell(2, 2).AsRange());
+            StyleNumbers(sheet.Cell(3, 2).AsRange());
             sheet.Column(1).AdjustToContents();
             sheet.Column(2).AdjustToContents();
         }
 
-        private static void BuildMonthlySheet(XLWorkbook workbook, MonthlyReportData data)
+        private static void BuildWellSheet(XLWorkbook workbook, WellReportData data)
         {
-            var sheet = workbook.Worksheets.Add("Помесячно");
+            var sheet = workbook.Worksheets.Add("Скважина");
+            sheet.Cell(1, 1).Value = "Показатель";
+            sheet.Cell(1, 2).Value = "Значение";
+            sheet.Cell(2, 1).Value = "Скважина";
+            sheet.Cell(2, 2).Value = data.Name;
+            sheet.Cell(3, 1).Value = "Месторождение";
+            sheet.Cell(3, 2).Value = data.Field;
+            sheet.Cell(4, 1).Value = "Суммарная нефть, м³";
+            sheet.Cell(4, 2).Value = data.TotalOilVol;
+            sheet.Cell(5, 1).Value = "Суммарная вода, м³";
+            sheet.Cell(5, 2).Value = data.TotalWaterVol;
+            sheet.Cell(6, 1).Value = "Период";
+            sheet.Cell(6, 2).Value = data.Period;
+            sheet.Cell(7, 1).Value = "Доля от добычи месторождения, %";
+            sheet.Cell(7, 2).Value = data.SharePct;
+
+            StyleHeader(sheet.Range(1, 1, 1, 2));
+            StyleNumbers(sheet.Range(4, 2, 5, 2));
+            StyleNumbers(sheet.Cell(7, 2).AsRange());
+            sheet.Column(1).AdjustToContents();
+            sheet.Column(2).AdjustToContents();
+        }
+
+        private static void BuildMonthlySheet(
+            XLWorkbook workbook,
+            string sheetName,
+            IReadOnlyList<MonthlyReportRow> monthly)
+        {
+            var sheet = workbook.Worksheets.Add(sheetName);
             sheet.Cell(1, 1).Value = "Год";
             sheet.Cell(1, 2).Value = "Месяц";
             sheet.Cell(1, 3).Value = "Нефть, м³";
@@ -139,7 +235,7 @@ namespace GeoPulse.WebAPI
             sheet.Cell(1, 5).Value = "Обводнённость, %";
 
             var row = 2;
-            foreach (var item in data.Monthly)
+            foreach (var item in monthly)
             {
                 sheet.Cell(row, 1).Value = item.Year;
                 sheet.Cell(row, 2).Value = item.Month;
@@ -149,8 +245,12 @@ namespace GeoPulse.WebAPI
                 row++;
             }
 
-            sheet.Range(1, 1, 1, 5).Style.Font.Bold = true;
-            sheet.Range(2, 3, row - 1, 5).Style.NumberFormat.Format = "#,##0.00";
+            StyleHeader(sheet.Range(1, 1, 1, 5));
+            if (row > 2)
+            {
+                StyleNumbers(sheet.Range(2, 3, row - 1, 5));
+            }
+
             sheet.Columns().AdjustToContents();
         }
 
@@ -175,6 +275,18 @@ namespace GeoPulse.WebAPI
             sheet.Range(1, 1, 1, 4).Style.Font.Bold = true;
             sheet.Range(2, 2, row - 1, 4).Style.NumberFormat.Format = "#,##0.00";
             sheet.Columns().AdjustToContents();
+        }
+
+        /// <summary>Общая шапка всех листов: жирная строка заголовков.</summary>
+        private static void StyleHeader(IXLRange header)
+        {
+            header.Style.Font.Bold = true;
+        }
+
+        /// <summary>Общий числовой формат всех отчётов — один и тот же `#,##0.00`.</summary>
+        private static void StyleNumbers(IXLRange range)
+        {
+            range.Style.NumberFormat.Format = NumberFormat;
         }
 
         private static string BuildPeriod(IReadOnlyList<MonthlyProductionFlatDto> monthly)

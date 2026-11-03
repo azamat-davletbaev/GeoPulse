@@ -41,5 +41,32 @@ namespace GeoPulse.WebAPI.Controllers
 
             return File(bytes, "text/csv", $"monthly_{DateTime.Now:yyyy-MM-dd}.csv");
         }
+
+        /// <summary>Excel-отчёт по одной скважине: листы «Скважина» (имя, месторождение, суммарные
+        /// нефть/вода, период, доля) и «Помесячно» (год, месяц, нефть, вода, обводнённость).</summary>
+        /// <param name="wellId">Внутренний идентификатор скважины (wells.Id).</param>
+        /// <param name="cancellationToken">Токен отмены.</param>
+        [HttpGet("wells/{wellId:int}.xlsx")]
+        [Produces("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> GetWellExcel(int wellId, CancellationToken cancellationToken)
+        {
+            var data = await _reports.LoadWellAsync(wellId, cancellationToken);
+            if (data is null)
+            {
+                return Problem(
+                    title: "Скважина не найдена",
+                    detail: $"Скважина с id {wellId} отсутствует в базе.",
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            var bytes = _reports.BuildWellXlsx(data);
+
+            return File(
+                bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                $"well_{wellId}_{DateTime.Now:yyyy-MM-dd}.xlsx");
+        }
     }
 }

@@ -170,3 +170,16 @@ body {
 .leaflet-popup-content strong {
   font-size: 14px;
 }
+
+/* Ссылка на персональный отчёт в попапе скважины. */
+.leaflet-popup-content a.popup-report {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.leaflet-popup-content a.popup-report:hover {
+  text-decoration: underline;
+}

@@ -4,7 +4,9 @@
 
 .DESCRIPTION
     Проверяет health, список скважин, карточку скважины, страницу суточной добычи
-    (пагинация, фильтр по датам, сортировка), выборку за конкретную дату и коды ошибок 400/404.
+    (пагинация, фильтр по датам, сортировка), выборку за конкретную дату, коды ошибок 400/404,
+    а также отчёты: сводный по месторождению (/api/Reports/monthly.xlsx) и персональный
+    по скважине (/api/Reports/wells/{wellId}.xlsx, включая 404 для неизвестного id).
     Требует заполненной БД: сначала пройдите смок-тест пайплайна из README (Kafka -> Consumer -> PostgreSQL).
 
 .EXAMPLE
@@ -59,6 +61,38 @@ function Assert-True {
     }
     else {
         Write-Host "[ OK ] $Message" -ForegroundColor Green
+    }
+}
+
+# Запрос файла: в отличие от Invoke-Api возвращает ещё заголовки и размер тела
+# (xlsx/csv отдаются как вложение, тело — двоичное).
+function Invoke-ApiDownload {
+    param([string]$Path)
+
+    try {
+        $response = Invoke-WebRequest -Uri ($BaseUrl + $Path) -UseBasicParsing
+        return [pscustomobject]@{
+            Status      = [int]$response.StatusCode
+            ContentType = [string]$response.Headers['Content-Type']
+            Disposition = [string]$response.Headers['Content-Disposition']
+            Size        = [int]$response.RawContentLength
+            Body        = $response.Content
+        }
+    }
+    catch {
+        $response = $_.Exception.Response
+        if ($null -eq $response) {
+            throw
+        }
+
+        $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+        return [pscustomobject]@{
+            Status      = [int]$response.StatusCode
+            ContentType = [string]$response.ContentType
+            Disposition = [string]$response.Headers['Content-Disposition']
+            Size        = 0
+            Body        = $reader.ReadToEnd()
+        }
     }
 }
 
@@ -151,6 +185,24 @@ Assert-Equal 400 $dateError.Status 'production/not-a-date -> 400'
 # 9. Swagger
 $swagger = Invoke-Api '/swagger/v1/swagger.json'
 Assert-Equal 200 $swagger.Status 'GET /swagger/v1/swagger.json -> 200'
+
+# 10. Отчёты: сводный по месторождению и персональный по скважине
+$monthlyXlsx = Invoke-ApiDownload '/api/Reports/monthly.xlsx'
+Assert-Equal 200 $monthlyXlsx.Status 'GET /api/Reports/monthly.xlsx -> 200'
+Assert-True ($monthlyXlsx.ContentType -like 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet*') 'monthly.xlsx: content-type Excel'
+Assert-True ($monthlyXlsx.Disposition -like 'attachment*') 'monthly.xlsx: Content-Disposition attachment'
+Assert-True ($monthlyXlsx.Size -gt 0) "monthly.xlsx: непустое тело ($($monthlyXlsx.Size) байт)"
+
+$wellId = $wells[0].wellId
+$wellXlsx = Invoke-ApiDownload "/api/Reports/wells/$wellId.xlsx"
+Assert-Equal 200 $wellXlsx.Status "GET /api/Reports/wells/$wellId.xlsx -> 200"
+Assert-True ($wellXlsx.ContentType -like 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet*') 'wells/{wellId}.xlsx: content-type Excel'
+Assert-True ($wellXlsx.Disposition -like "attachment*well_$wellId*") "wells/{wellId}.xlsx: вложение с именем well_$wellId"
+Assert-True ($wellXlsx.Size -gt 0) "wells/{wellId}.xlsx: непустое тело ($($wellXlsx.Size) байт)"
+
+$unknownWellReport = Invoke-Api '/api/Reports/wells/999999.xlsx'
+Assert-Equal 404 $unknownWellReport.Status 'GET /api/Reports/wells/999999.xlsx (нет скважины) -> 404'
+Assert-True ($unknownWellReport.Body -match '"status":404') '404 отчёта по скважине отдан как ProblemDetails'
 
 Write-Host ''
 if ($script:failures -gt 0) {
