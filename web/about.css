@@ -1,21 +1,23 @@
 .about {
   max-width: 960px;
   margin: 0 auto;
-  padding: 88px 18px 40px;
+  padding: 24px 18px 40px;
   display: flex;
   flex-direction: column;
   gap: 18px;
 }
 
-.about .card {
+/* Карточки разделов и блок «Разработчик» — та же тёмная карточка дизайн-системы. */
+.about .card,
+.about .about-contact {
   background: var(--panel-bg);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px 20px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
-.about .card h2 {
+.about .card h2,
+.about .about-contact h2 {
   font-size: 18px;
   font-weight: 700;
   margin-bottom: 12px;
@@ -24,7 +26,7 @@
 .about .card p {
   font-size: 14px;
   line-height: 1.6;
-  color: var(--ink);
+  color: var(--text);
   margin-bottom: 10px;
 }
 
@@ -35,9 +37,11 @@
 .about .card a {
   color: var(--accent);
   text-decoration: none;
+  transition: color var(--transition);
 }
 
 .about .card a:hover {
+  color: #f0b96b;
   text-decoration: underline;
 }
 
@@ -45,7 +49,7 @@
   font-family: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
   font-size: 12.5px;
   line-height: 1.5;
-  color: var(--ink);
+  color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -75,26 +79,10 @@
   color: var(--muted);
 }
 
-/* Блок «Разработчик» — первым блоком сразу под шапкой страницы: та же карточка,
-   что у секций «Что это»/«Стек», поэтому вёрстка не меняется. */
-.about .about-contact {
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-}
-
-.about .about-contact h2 {
-  font-size: 18px;
-  font-weight: 700;
-  margin-bottom: 12px;
-}
-
 .about .about-contact p {
   font-size: 14px;
   line-height: 1.6;
-  color: var(--ink);
+  color: var(--text);
   margin-bottom: 6px;
 }
 
@@ -105,14 +93,15 @@
 .about .about-contact a {
   color: var(--accent);
   text-decoration: none;
+  transition: color var(--transition);
 }
 
 .about .about-contact a:hover {
+  color: #f0b96b;
   text-decoration: underline;
 }
 
-/* Подвал страницы: краткий дубль контактов одной строкой, приглушённый и по центру
-   той же колонки 960 px, что и разделы «О проекте». */
+/* Подвал страницы: краткий дубль контактов одной строкой. */
 .about-footer {
   max-width: 960px;
   margin: 0 auto;
@@ -129,8 +118,10 @@
 .about-footer a {
   color: var(--accent);
   text-decoration: none;
+  transition: color var(--transition);
 }
 
 .about-footer a:hover {
+  color: #f0b96b;
   text-decoration: underline;
 }

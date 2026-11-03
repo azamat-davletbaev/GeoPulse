@@ -1,10 +1,15 @@
 :root {
-  --bg: #f5f7fa;
-  --ink: #1f2937;
-  --muted: #6b7280;
-  --accent: #2f6fed;
-  --panel-bg: #ffffff;
-  --border: #e5e7eb;
+  --bg: #0b0e14;
+  --panel-bg: #141a24;
+  --border: #232c3b;
+  --accent: #e8a13c;
+  --water: #5ec8e5;
+  --gas: #7fd1a8;
+  --injection: #7d93a8;
+  --text: #e8ecf2;
+  --muted: #8b95a5;
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --transition: 0.18s ease;
 }
 
 * {
@@ -13,96 +18,235 @@
   padding: 0;
 }
 
-html,
-body {
+html {
   height: 100%;
 }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  font-family: var(--font);
+  color: var(--text);
   background: var(--bg);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
 }
 
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+
+a:hover {
+  color: #f0b96b;
+}
+
+/* ------------------------------------------------------------------ */
+/* Шапка                                                               */
+/* ------------------------------------------------------------------ */
 .topbar {
-  position: fixed;
+  position: sticky;
   top: 0;
-  left: 0;
-  right: 0;
-  /* Leaflet внутри карты поднимает свои слои до z-index 1000 (контролы)
-     и 700 (попапы), поэтому у шапки должен быть запас сверху. */
   z-index: 2000;
-  /* Собственный stacking context: гарантирует, что шапка не окажется
-     под панелями карты ни при каком состоянии. */
   isolation: isolate;
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 12px 18px;
-  background: rgba(255, 255, 255, 0.95);
+  align-items: center;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  min-height: 56px;
+  padding: 8px 18px;
+  background: var(--panel-bg);
   border-bottom: 1px solid var(--border);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
-.topbar h1 {
-  font-size: 20px;
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.2px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.brand:hover {
+  color: var(--text);
+}
+
+.brand-mark {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+  fill: currentColor;
+  flex: none;
 }
 
 .topbar .subtitle {
   color: var(--muted);
-  font-size: 14px;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .topnav {
   display: flex;
   gap: 6px;
-  margin-left: 8px;
+  margin-left: auto;
+  flex-wrap: wrap;
 }
 
 .topnav a {
+  display: inline-flex;
+  align-items: center;
   color: var(--muted);
-  text-decoration: none;
   font-size: 14px;
   font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: #1c2431;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color var(--transition), background var(--transition);
 }
 
 .topnav a:hover {
-  color: var(--ink);
-  background: var(--bg);
+  color: var(--text);
+  background: #232c3b;
 }
 
 .topnav a.active {
   color: var(--accent);
-  background: rgba(47, 111, 237, 0.08);
+  background: rgba(232, 161, 60, 0.12);
 }
 
+/* На мобильной ширине: компактные пилюли, подпись скрываем. */
+@media (max-width: 720px) {
+  .topbar .subtitle {
+    display: none;
+  }
+
+  .brand-name {
+    font-size: 16px;
+  }
+
+  .topnav a {
+    padding: 6px 11px;
+    font-size: 13px;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Карта                                                               */
+/* ------------------------------------------------------------------ */
 #map {
-  position: fixed;
-  inset: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
   z-index: 0;
-  /* Изолируем stacking context карты: панели (tile/overlay/marker/popup),
-     контролы (z-index до 1000) и попапы Leaflet остаются внутри #map
-     и не могут перекрыть шапку или панель с графиком. */
+  background: var(--bg);
   isolation: isolate;
 }
 
-/* Верхние контролы Leaflet (zoom, attribution сверху) опускаем ниже фиксированной
-   шапки: её высота ~50px, плюс штатный отступ Leaflet 10px. Иначе после поднятия
-   z-index шапки кнопки зума оказались бы спрятаны под ней. */
-.leaflet-top {
-  top: 52px;
+.leaflet-container {
+  background: var(--bg);
+  font-family: var(--font);
 }
 
+/* Контролы Leaflet находятся внутри #map, который начинается сразу под sticky-шапкой:
+   штатный отступ .leaflet-top (top: 0 + margin 10px) не требует дополнительного смещения. */
+
+.leaflet-bar a {
+  background: var(--panel-bg);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.leaflet-bar a:hover,
+.leaflet-bar a:focus {
+  background: #1b2331;
+  color: var(--text);
+}
+
+.leaflet-control-attribution {
+  background: rgba(11, 14, 20, 0.7);
+  color: var(--muted);
+}
+
+.leaflet-control-attribution a {
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ */
+/* Кастомные попапы Leaflet                                            */
+/* ------------------------------------------------------------------ */
+.leaflet-popup-content-wrapper {
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.leaflet-popup-tip {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.leaflet-popup-content {
+  margin: 12px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  /* fade + сдвиг 8px, без тяжёлых теней и blur. */
+  animation: gp-popup-in 180ms ease-out both;
+}
+
+.leaflet-popup-content strong {
+  font-size: 14px;
+}
+
+.leaflet-popup-content a.popup-report {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.leaflet-popup-content a.popup-report:hover {
+  text-decoration: underline;
+}
+
+.leaflet-popup-close-button {
+  color: var(--muted);
+}
+
+.leaflet-popup-close-button:hover {
+  color: var(--text);
+}
+
+@keyframes gp-popup-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Панель скважины                                                     */
+/* ------------------------------------------------------------------ */
 .panel {
   position: fixed;
   top: 68px;
   right: 16px;
   z-index: 1200;
-  width: 380px;
+  width: 400px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 84px);
   display: none;
@@ -110,7 +254,7 @@ body {
   background: var(--panel-bg);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
   overflow: hidden;
 }
 
@@ -144,10 +288,11 @@ body {
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
+  transition: color var(--transition);
 }
 
 .panel-head button:hover {
-  color: var(--ink);
+  color: var(--text);
 }
 
 .panel-body {
@@ -156,30 +301,105 @@ body {
   padding: 12px 14px;
 }
 
+.panel-chart {
+  position: absolute;
+  inset: 0;
+}
+
+.panel-chart-skeleton {
+  position: absolute;
+  inset: 12px 14px;
+}
+
 .panel-error {
   padding: 0 14px 12px;
-  color: #b91c1c;
+  color: #e8a13c;
   font-size: 13px;
 }
 
-.leaflet-popup-content {
-  font-size: 13px;
-  line-height: 1.45;
+/* ------------------------------------------------------------------ */
+/* Общие компоненты (карточки, кнопки, ошибки, скелетоны)              */
+/* ------------------------------------------------------------------ */
+.card {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
 }
 
-.leaflet-popup-content strong {
-  font-size: 14px;
+.card h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 12px;
 }
 
-/* Ссылка на персональный отчёт в попапе скважины. */
-.leaflet-popup-content a.popup-report {
+.card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.button {
   display: inline-block;
-  margin-top: 6px;
-  color: var(--accent);
-  font-weight: 500;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #0b0e14;
   text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: filter var(--transition), background var(--transition), color var(--transition);
 }
 
-.leaflet-popup-content a.popup-report:hover {
-  text-decoration: underline;
+.button:hover {
+  filter: brightness(1.08);
+  color: #0b0e14;
 }
+
+.button-secondary {
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.button-secondary:hover {
+  background: #1b2331;
+  filter: none;
+  color: var(--text);
+}
+
+.error {
+  padding: 12px 14px;
+  color: #e8a13c;
+  font-size: 14px;
+  background: rgba(232, 161, 60, 0.08);
+  border: 1px solid rgba(232, 161, 60, 0.35);
+  border-radius: 8px;
+}
+
+/* Скелетон-загрузка вместо «прыгающего» контента. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--border);
+  border-radius: 6px;
+  min-height: 14px;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  animation: gp-shimmer 1.4s infinite;
+}
+
+@keyframes gp-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+

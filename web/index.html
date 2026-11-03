@@ -4,25 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GeoPulse — карта скважин Volve</title>
-  <!-- Leaflet 1.9.4 и Chart.js 4.4.1 лежат локально в web/vendor/ (те же версии,
-       что раньше отдавали CDN), поэтому JS/CSS работают без доступа в интернет.
-       Сетевыми остаются только тайлы карты tile.openstreetmap.org.
-       Структура vendor/leaflet/ повторяет dist Leaflet: leaflet.css ссылается
-       на images/marker-icon.png относительным путём. -->
-  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <!-- Стили и библиотеки — только CDN: Leaflet (карта), ECharts (графики),
+       Inter (шрифт через Google Fonts). Без сборщиков и локальных vendor-файлов. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/style.css">
-  <!-- Иконка вкладки отдаётся тем же статическим фронтом (web/favicon.ico). -->
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
 </head>
 <body>
   <header class="topbar">
-    <h1>GeoPulse</h1>
-    <nav class="topnav">
-      <a href="/" class="active">Карта</a>
+    <a class="brand" href="/" aria-label="GeoPulse — на главную">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
+      <span class="brand-name">GeoPulse</span>
+    </a>
+    <span class="subtitle">Месторождение Volve — интерактивная карта скважин</span>
+    <nav class="topnav" aria-label="Основная навигация">
+      <a href="/">Карта</a>
       <a href="/reports.html">Отчёты</a>
+      <a href="/forecast.html">Прогноз</a>
       <a href="/about.html">О проекте</a>
     </nav>
-    <span class="subtitle">Месторождение Volve — интерактивная карта скважин</span>
   </header>
 
   <main id="map" aria-label="Карта скважин"></main>
@@ -33,13 +36,16 @@
       <button id="panel-close" type="button" aria-label="Закрыть панель">&times;</button>
     </div>
     <div class="panel-body">
-      <canvas id="chart"></canvas>
+      <div id="chart" class="panel-chart"></div>
+      <div id="chart-skeleton" class="skeleton panel-chart-skeleton"></div>
     </div>
     <p id="panel-error" class="panel-error" hidden></p>
   </aside>
 
-  <script src="/vendor/leaflet/leaflet.js"></script>
-  <script src="/vendor/chartjs/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="/common.js"></script>
   <script src="/app.js"></script>
+  <script src="/nav.js"></script>
 </body>
 </html>

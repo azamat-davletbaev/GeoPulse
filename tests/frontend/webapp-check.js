@@ -1,8 +1,9 @@
 'use strict';
 
-// Проверка фронтенда web/app.js без браузера: Leaflet, DOM и fetch заменены
-// минимальными заглушками, повторяющими существенное поведение Leaflet
+// Проверка фронтенда web/app.js без браузера: Leaflet, DOM, fetch и sessionStorage
+// заменены минимальными заглушками, повторяющими существенное поведение Leaflet
 // (L.latLng бросает "Invalid LatLng object" на NaN/undefined).
+// Перед app.js загружается web/common.js — он поставляет window.GeoPulse.
 //
 // Сценарии (аргумент командной строки):
 //   mixed — валидные и битые данные вперемешку: карта жива, слои строятся по валидным,
@@ -10,20 +11,20 @@
 //   empty — валидных координат нет вовсе: карта остаётся на нейтральном виде.
 //
 // Запуск: node tests/frontend/webapp-check.js [mixed|empty]
-// Проверка не входит в dotnet test: это отдельный прогон (см. run-webapp-check.ps1).
 
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
 const scenario = process.argv[2] || process.env.SCENARIO || 'mixed';
-const appJsPath = path.resolve(__dirname, '..', '..', 'web', 'app.js');
+const repoRoot = path.resolve(__dirname, '..', '..');
+const commonJsPath = path.join(repoRoot, 'web', 'common.js');
+const appJsPath = path.join(repoRoot, 'web', 'app.js');
 
 const warnings = [];
 const sandboxConsole = {
   warn: (...args) => warnings.push(args.map(String).join(' ')),
   error: (...args) => warnings.push('ERROR: ' + args.map(String).join(' ')),
-  // app.js ничего не печатает через log, поэтому вывод отдаётся стенду.
   log: (...args) => process.stdout.write(args.map(String).join(' ') + '\n')
 };
 
@@ -46,13 +47,11 @@ function latLngBounds(initial) {
       if (!ll) {
         return bounds;
       }
-
       if (bounds.sw === null) {
         bounds.sw = { lat: ll.lat, lng: ll.lng };
         bounds.ne = { lat: ll.lat, lng: ll.lng };
         return bounds;
       }
-
       bounds.sw.lat = Math.min(bounds.sw.lat, ll.lat);
       bounds.sw.lng = Math.min(bounds.sw.lng, ll.lng);
       bounds.ne.lat = Math.max(bounds.ne.lat, ll.lat);
@@ -76,19 +75,28 @@ function latLngBounds(initial) {
   return bounds;
 }
 
-
-const mapCalls = { setView: [], fitBounds: [], added: [] };
+const mapCalls = { setView: [], flyTo: [], added: [] };
 const map = {
   setView(center, zoom) {
     mapCalls.setView.push({ center: new LatLng(Number(center[0]), Number(center[1])), zoom });
     return map;
   },
-  fitBounds(bounds, options) {
-    if (!bounds.isValid()) {
-      throw new Error('fitBounds: invalid bounds');
-    }
-    mapCalls.fitBounds.push({ bounds, options });
+  flyTo(center, zoom, options) {
+    mapCalls.flyTo.push({ center: new LatLng(Number(center[0]), Number(center[1])), zoom, options });
     return map;
+  },
+  once(event, cb) {
+    // Имитируем завершение перелёта сразу, чтобы каскад траекторий стартовал.
+    if (event === 'moveend') {
+      cb();
+    }
+    return map;
+  },
+  createPane() {
+    return {};
+  },
+  getPane() {
+    return { style: {} };
   },
   addLayer(layer) {
     mapCalls.added.push(layer);
@@ -107,6 +115,7 @@ function makePath(kind, latlngs, options) {
     on: () => layer,
     setPopupContent: () => layer,
     openPopup: () => layer,
+    setStyle: () => layer,
     addTo(target) {
       if (target === map) {
         mapCalls.added.push(layer);
@@ -118,7 +127,6 @@ function makePath(kind, latlngs, options) {
   };
 
   if (kind === 'polyline') {
-    // Как в Leaflet: точки проверяются в момент создания слоя.
     for (const pair of latlngs) {
       new LatLng(Number(pair[0]), Number(pair[1]));
     }
@@ -149,7 +157,6 @@ const L = {
   circleMarker: (latlng, options) => makePath('circleMarker', latlng, options),
   latLngBounds
 };
-
 // Данные стенда: в сценарии mixed битые и валидные скважины идут вперемешку.
 const wells = [
   { wellId: 1, name: 'ok-full', field: 'Volve', latitude: 58.4412, longitude: 1.8541, tdMd: 3200, tdTvd: 2500 },
@@ -158,7 +165,6 @@ const wells = [
   { wellId: 4, name: 'single-point', field: 'Volve', latitude: 58.4414, longitude: 1.8543, tdMd: 100, tdTvd: 90 }
 ];
 
-// Замеры нарочно не отсортированы по MD: линия и забой строятся по MD.
 const trajectories = {
   1: [
     { md: 3000, latitude: 58.46, longitude: 1.89 },
@@ -183,8 +189,8 @@ if (scenario === 'empty') {
 }
 
 const expected = scenario === 'empty'
-  ? { setView: 2, fitBounds: 0, polyline: 0, groups: 0, markers: 0 }
-  : { setView: 1, fitBounds: 1, polyline: 1, groups: 2, markers: 3 };
+  ? { setView: 2, flyTo: 0, polyline: 0, groups: 0, markers: 0 }
+  : { setView: 1, flyTo: 1, polyline: 2, groups: 2, markers: 3 };
 
 function response(data, ok) {
   return { ok: ok !== false, status: ok === false ? 500 : 200, json: async () => data };
@@ -195,7 +201,7 @@ globalThis.fetch = async (url) => {
     return response(wells);
   }
 
-  const match = /^\/api\/Wells\/(\d+)\/trajectory$/.exec(url);
+  const match = /^\/api\/wells\/(\d+)\/trajectory$/.exec(url);
   if (match) {
     const payload = trajectories[Number(match[1])];
     return payload === 'HTTP500' ? response({}, false) : response(payload ?? []);
@@ -214,26 +220,41 @@ globalThis.fetch = async (url) => {
 
 globalThis.L = L;
 globalThis.console = sandboxConsole;
+globalThis.window = globalThis;
+globalThis.sessionStorage = { getItem: () => null, setItem: () => {} };
+globalThis.echarts = { init: () => ({ setOption() {}, dispose() {} }) };
 globalThis.document = {
   getElementById: (id) => (id === 'panel-close'
     ? null
-    : { classList: { add() {}, remove() {} }, setAttribute() {}, hidden: true, textContent: '' })
+    : {
+        classList: { add() {}, remove() {}, toggle() {} },
+        setAttribute() {},
+        hidden: true,
+        textContent: '',
+        style: {},
+        addEventListener() {},
+        innerHTML: ''
+      })
 };
 
+// Сначала общий модуль, затем карта.
+vm.runInThisContext(fs.readFileSync(commonJsPath, 'utf8'), { filename: 'common.js' });
 vm.runInThisContext(fs.readFileSync(appJsPath, 'utf8'), { filename: 'app.js' });
 
 setTimeout(() => {
   const problems = [];
 
-  // 1. Карта жива: нейтральный вид выставлен до данных, затем fitBounds по границам.
+  // 1. Карта жива: нейтральный вид выставлен до данных.
   if (mapCalls.setView.length !== expected.setView) {
     problems.push('ожидалось setView=' + expected.setView + ', получено ' + mapCalls.setView.length);
   }
-  if (mapCalls.fitBounds.length !== expected.fitBounds) {
-    problems.push('ожидалось fitBounds=' + expected.fitBounds + ', получено ' + mapCalls.fitBounds.length);
+
+  // 2. Вводная анимация: перелёт к кусту скважин (или нейтральный вид без валидных точек).
+  if (mapCalls.flyTo.length !== expected.flyTo) {
+    problems.push('ожидалось flyTo=' + expected.flyTo + ', получено ' + mapCalls.flyTo.length);
   }
 
-  // 2. Слои: линия строится только по траекториям с двумя и более валидными точками.
+  // 3. Слои: траектория = пара слоёв (широкий + тонкий), строится при 2+ валидных точках.
   if (built.polylines.length !== expected.polyline) {
     problems.push('ожидалось polyline=' + expected.polyline + ', получено ' + built.polylines.length);
   }
@@ -241,24 +262,24 @@ setTimeout(() => {
     problems.push('ожидалось групп траекторий ' + expected.groups + ', получено ' + built.groups.length);
   }
 
-  // 3. Маркеры устьев: только по валидным координатам.
+  // 4. Маркеры устьев: только по валидным координатам.
   const wellheadMarkers = mapCalls.added.filter((layer) => layer.kind === 'circleMarker');
   if (wellheadMarkers.length !== expected.markers) {
     problems.push('ожидалось маркеров устьев ' + expected.markers + ', получено ' + wellheadMarkers.length);
   }
 
-  // 4. Первичный вид учитывает траектории, а не только устья, и ограничен по зуму.
-  if (expected.fitBounds === 1) {
-    const bounds = mapCalls.fitBounds[0].bounds;
-    if (!(bounds.sw.lat <= 58.4412 && bounds.ne.lat >= 58.46)) {
-      problems.push('границы не включают точки траектории: ' + JSON.stringify(bounds));
+  // 5. Перелёт наводится на куст скважин с зумом ~12–13.
+  if (expected.flyTo === 1) {
+    const fly = mapCalls.flyTo[0];
+    if (fly.zoom !== 13) {
+      problems.push('ожидался перелёт с зумом 13, получено ' + fly.zoom);
     }
-    if (mapCalls.fitBounds[0].options.maxZoom !== 16) {
-      problems.push('у fitBounds нет ограничителя maxZoom');
+    if (!(fly.center.lat >= 58.44 && fly.center.lat <= 58.46 && fly.center.lng >= 1.85 && fly.center.lng <= 1.9)) {
+      problems.push('перелёт не наведён на куст скважин: ' + JSON.stringify(fly.center));
     }
   }
 
-  // 5. Сломанная скважина логируется отдельно и не мешает остальным.
+  // 6. Сломанная скважина логируется отдельно и не мешает остальным.
   const text = warnings.join('\n');
   if (scenario === 'mixed') {
     if (!/bad-coords[\s\S]*некорректные координаты/.test(text)) {
@@ -275,7 +296,7 @@ setTimeout(() => {
 
   console.log('scenario=' + scenario + ': polyline=' + built.polylines.length +
     ', groups=' + built.groups.length + ', wellheadMarkers=' + wellheadMarkers.length +
-    ', setView=' + mapCalls.setView.length + ', fitBounds=' + mapCalls.fitBounds.length);
+    ', setView=' + mapCalls.setView.length + ', flyTo=' + mapCalls.flyTo.length);
 
   if (problems.length > 0) {
     console.log('FAIL scenario=' + scenario);
@@ -288,8 +309,10 @@ setTimeout(() => {
   }
 
   console.log('OK scenario=' + scenario);
-  if (mapCalls.fitBounds.length > 0) {
-    console.log('   fitBounds=' + JSON.stringify(mapCalls.fitBounds[0].bounds) +
-      ', maxZoom=' + mapCalls.fitBounds[0].options.maxZoom);
+  if (mapCalls.flyTo.length > 0) {
+    console.log('   flyTo=' + JSON.stringify(mapCalls.flyTo[0].center) + ', zoom=' + mapCalls.flyTo[0].zoom);
   }
-}, 300);
+  process.exit(0);
+}, 1000);
+
+
