@@ -55,6 +55,31 @@ body {
   font-size: 14px;
 }
 
+.topnav {
+  display: flex;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.topnav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.topnav a:hover {
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.topnav a.active {
+  color: var(--accent);
+  background: rgba(47, 111, 237, 0.08);
+}
+
 #map {
   position: fixed;
   inset: 0;

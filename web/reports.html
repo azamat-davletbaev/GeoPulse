@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoPulse — отчёты по месторождению Volve</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/reports.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>GeoPulse</h1>
+    <nav class="topnav">
+      <a href="/">Карта</a>
+      <a href="/reports.html" class="active">Отчёты</a>
+    </nav>
+    <span class="subtitle">Месторождение Volve — отчёты по добыче</span>
+  </header>
+
+  <main class="reports">
+    <section class="toolbar">
+      <h2>Отчёт по месторождению</h2>
+      <div class="actions">
+        <a class="button" href="/api/Reports/monthly.xlsx">Скачать Excel</a>
+        <a class="button button-secondary" href="/api/Reports/monthly.csv">Скачать CSV</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Сводка</h3>
+      <table id="summary" class="summary-table">
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h3>Добыча по месяцам (по месторождению)</h3>
+      <div class="chart-wrap">
+        <canvas id="monthlyChart"></canvas>
+      </div>
+    </section>
+
+    <p id="error" class="error" hidden></p>
+  </main>
+
+  <script src="/vendor/chartjs/chart.umd.min.js"></script>
+  <script src="/reports.js"></script>
+</body>
+</html>

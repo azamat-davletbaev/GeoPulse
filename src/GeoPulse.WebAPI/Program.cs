@@ -25,6 +25,8 @@ var connectionString = builder.Configuration.GetConnectionString("GeoPulse")
 
 builder.Services.AddGeoPulseInfrastructure(connectionString);
 builder.Services.AddSingleton<ClickHouseAnalyticsService>();
+builder.Services.AddSingleton<IMonthlyProductionReader>(sp => sp.GetRequiredService<ClickHouseAnalyticsService>());
+builder.Services.AddScoped<ReportService>();
 
 var app = builder.Build();
 

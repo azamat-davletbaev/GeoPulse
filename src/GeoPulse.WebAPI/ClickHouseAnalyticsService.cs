@@ -6,7 +6,7 @@ using Microsoft.Extensions.Configuration;
 namespace GeoPulse.WebAPI
 {
     /// <summary>Аналитика из ClickHouse (база gp, таблица monthly_production).</summary>
-    public sealed class ClickHouseAnalyticsService
+    public sealed class ClickHouseAnalyticsService : IMonthlyProductionReader
     {
         private readonly string _connectionString;
 
@@ -73,6 +73,33 @@ namespace GeoPulse.WebAPI
             }
 
             return new ProductionSummaryDto();
+        }
+
+        /// <summary>Все помесячные агрегаты по всем скважинам, по возрастанию года и месяца (для отчётов).</summary>
+        public async Task<IReadOnlyList<MonthlyProductionFlatDto>> GetAllMonthlyAsync(CancellationToken ct)
+        {
+            await using var connection = new ClickHouseConnection(_connectionString);
+            await connection.OpenAsync(ct);
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT well_id, year, month, oil_vol_sum, water_vol_sum " +
+                "FROM gp.monthly_production ORDER BY year, month, well_id";
+
+            var result = new List<MonthlyProductionFlatDto>();
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                result.Add(new MonthlyProductionFlatDto
+                {
+                    WellId = Convert.ToInt32(reader.GetValue(0)),
+                    Year = Convert.ToInt32(reader.GetValue(1)),
+                    Month = Convert.ToInt32(reader.GetValue(2)),
+                    OilVolSum = Convert.ToDouble(reader.GetValue(3)),
+                    WaterVolSum = Convert.ToDouble(reader.GetValue(4))
+                });
+            }
+
+            return result;
         }
     }
 }

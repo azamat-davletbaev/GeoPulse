@@ -58,3 +58,24 @@ internal sealed class FakeDailyProductionRepository : IDailyProductionRepository
     public Task<bool> ExistsAsync(int wellId, DateOnly date, CancellationToken cancellationToken = default) =>
         Task.FromResult(false);
 }
+
+/// <summary>In-memory подмена IMonthlyProductionReader для тестов ReportService и ReportsController.</summary>
+internal sealed class FakeMonthlyProductionReader : IMonthlyProductionReader
+{
+    private readonly IReadOnlyList<MonthlyProductionFlatDto> _monthly;
+    private readonly ProductionSummaryDto _summary;
+
+    public FakeMonthlyProductionReader(
+        IEnumerable<MonthlyProductionFlatDto>? monthly = null,
+        ProductionSummaryDto? summary = null)
+    {
+        _monthly = monthly?.ToList() ?? new List<MonthlyProductionFlatDto>();
+        _summary = summary ?? new ProductionSummaryDto();
+    }
+
+    public Task<IReadOnlyList<MonthlyProductionFlatDto>> GetAllMonthlyAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(_monthly);
+
+    public Task<ProductionSummaryDto> GetSummaryAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(_summary);
+}
