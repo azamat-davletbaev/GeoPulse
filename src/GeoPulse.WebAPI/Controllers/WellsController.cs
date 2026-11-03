@@ -1,3 +1,4 @@
+using GeoPulse.Core.Geometry;
 using GeoPulse.Core.Repositories;
 using GeoPulse.WebAPI.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -12,12 +13,17 @@ namespace GeoPulse.WebAPI.Controllers
     {
         private readonly IWellRepository _wells;
         private readonly IDailyProductionRepository _production;
+        private readonly IWellTrajectoryRepository _trajectories;
 
         /// <summary>Конструктор.</summary>
-        public WellsController(IWellRepository wells, IDailyProductionRepository production)
+        public WellsController(
+            IWellRepository wells,
+            IDailyProductionRepository production,
+            IWellTrajectoryRepository trajectories)
         {
             _wells = wells;
             _production = production;
+            _trajectories = trajectories;
         }
 
         /// <summary>Список скважин с координатами устья (JOIN wells + well_locations).</summary>
@@ -29,6 +35,42 @@ namespace GeoPulse.WebAPI.Controllers
             var wells = await _wells.GetAllWithLocationsAsync(cancellationToken);
 
             return Ok(wells.Select(WellDto.FromModel).ToList());
+        }
+
+        /// <summary>Траектория ствола: замеры (MD/TVD/инклинометрия) в WGS84 (конвертация из ED50/UTM31N на бэкенде).</summary>
+        /// <param name="wellId">Внутренний идентификатор скважины (wells.Id).</param>
+        /// <param name="cancellationToken">Токен отмены.</param>
+        [HttpGet("{wellId:int}/trajectory")]
+        [ProducesResponseType(typeof(IReadOnlyList<TrajectoryPointDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<IReadOnlyList<TrajectoryPointDto>>> GetTrajectory(
+            int wellId,
+            CancellationToken cancellationToken)
+        {
+            var well = await _wells.GetByIdAsync(wellId, cancellationToken);
+            if (well is null)
+            {
+                return Problem(
+                    title: "Скважина не найдена",
+                    detail: $"Скважина с id {wellId} отсутствует в базе.",
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            var points = await _trajectories.GetByWellIdAsync(wellId, cancellationToken);
+
+            return Ok(points.Select(point =>
+            {
+                var (latitude, longitude) = CoordinateTransform.Ed50Utm31ToWgs84(point.Easting, point.Northing);
+                return new TrajectoryPointDto
+                {
+                    Md = point.Md,
+                    Tvd = point.Tvd,
+                    Inclination = point.Inclination,
+                    Azimuth = point.Azimuth,
+                    Latitude = latitude,
+                    Longitude = longitude
+                };
+            }).ToList());
         }
 
         /// <summary>Карточка скважины по коду НПД: справочные данные и покрытие добычей.</summary>

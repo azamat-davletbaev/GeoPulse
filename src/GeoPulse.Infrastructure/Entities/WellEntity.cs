@@ -23,5 +23,11 @@ namespace GeoPulse.Infrastructure.Entities
 
         /// <summary>Координаты устья (1:1).</summary>
         public WellLocationEntity? WellLocation { get; set; }
+
+        /// <summary>Замеры траектории ствола.</summary>
+        public List<WellTrajectoryEntity> WellTrajectories { get; set; } = new();
+
+        /// <summary>Метаданные траектории (забой TD, 1:1).</summary>
+        public WellTrajectoryMetaEntity? WellTrajectoryMeta { get; set; }
     }
 }

@@ -162,6 +162,15 @@ namespace GeoPulse.CHIngest
                             break;
                         }
 
+                        case MessageKind.Trajectory:
+                        {
+                            // Геометрия не пишется в ClickHouse (не таймсерия): сбрасываем батч добычи
+                            // и подтверждаем событие, не отправляя его в DLQ.
+                            await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
+                            consumer.Commit(result);
+                            break;
+                        }
+
                         default:
                         {
                             await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
@@ -378,17 +387,23 @@ namespace GeoPulse.CHIngest
         {
             Well,
             Daily,
+            Trajectory,
             Invalid
         }
 
-        private sealed record Classification(MessageKind Kind, WellRegisteredData? Well, DailyProductionData? Daily, string? Error);
+        private sealed record Classification(
+            MessageKind Kind,
+            WellRegisteredData? Well,
+            DailyProductionData? Daily,
+            TrajectoryData? Trajectory,
+            string? Error);
 
         /// <summary>Разбирает сообщение: тип/версия схемы и данные события.</summary>
         private static Classification Classify(string? raw)
         {
             if (string.IsNullOrWhiteSpace(raw))
             {
-                return new Classification(MessageKind.Invalid, null, null, "empty.message");
+                return new Classification(MessageKind.Invalid, null, null, null, "empty.message");
             }
 
             EventHeader header;
@@ -398,12 +413,12 @@ namespace GeoPulse.CHIngest
             }
             catch (JsonException)
             {
-                return new Classification(MessageKind.Invalid, null, null, "unparseable.json");
+                return new Classification(MessageKind.Invalid, null, null, null, "unparseable.json");
             }
 
             if (header.SchemaVersion != EventTypes.SchemaVersion)
             {
-                return new Classification(MessageKind.Invalid, null, null, "unknown.schemaVersion");
+                return new Classification(MessageKind.Invalid, null, null, null, "unknown.schemaVersion");
             }
 
             switch (header.EventType)
@@ -414,12 +429,12 @@ namespace GeoPulse.CHIngest
                     {
                         var evt = JsonSerializer.Deserialize<WellRegisteredEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, "missing.data")
-                            : new Classification(MessageKind.Well, evt.Data, null, null);
+                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            : new Classification(MessageKind.Well, evt.Data, null, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, "unparseable.well.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.well.event");
                     }
                 }
 
@@ -429,17 +444,33 @@ namespace GeoPulse.CHIngest
                     {
                         var evt = JsonSerializer.Deserialize<DailyProductionEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, "missing.data")
-                            : new Classification(MessageKind.Daily, null, evt.Data, null);
+                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            : new Classification(MessageKind.Daily, null, evt.Data, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, "unparseable.daily.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.daily.event");
+                    }
+                }
+
+                case EventTypes.Trajectory:
+                {
+                    // Геометрия — не таймсерия: CHIngest распознаёт событие, но не пишет его в ClickHouse.
+                    try
+                    {
+                        var evt = JsonSerializer.Deserialize<TrajectoryEvent>(raw, MessagingJson.Options);
+                        return evt?.Data is null
+                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            : new Classification(MessageKind.Trajectory, null, null, evt.Data, null);
+                    }
+                    catch (JsonException)
+                    {
+                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.trajectory.event");
                     }
                 }
 
                 default:
-                    return new Classification(MessageKind.Invalid, null, null, $"unknown.eventType:{header.EventType}");
+                    return new Classification(MessageKind.Invalid, null, null, null, $"unknown.eventType:{header.EventType}");
             }
         }
 

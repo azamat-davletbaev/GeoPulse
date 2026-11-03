@@ -117,6 +117,12 @@ $propertyNames = @($wells[0].PSObject.Properties.Name)
 Assert-True ($propertyNames -contains 'npdWellBoreCode') 'в ответе есть натуральный ключ npdWellBoreCode'
 Assert-True (-not ($propertyNames -contains 'id')) 'внутренние id из БД в ответе не публикуются'
 
+# 2b. Забой (TD) в списке скважин (этап 7): добавочные поля, не ломающие прежний контракт.
+Assert-True ($propertyNames -contains 'tdMd') 'в ответе есть поле забоя tdMd'
+Assert-True ($propertyNames -contains 'tdTvd') 'в ответе есть поле забоя tdTvd'
+$withTd = @($wells | Where-Object { $null -ne $_.tdMd })
+Assert-True ($withTd.Count -gt 0) "забой (tdMd) заполнен у скважин (count=$($withTd.Count))"
+
 # 3. Карточка скважины
 $code = $wells[0].npdWellBoreCode
 $detailsResponse = Invoke-Api "/api/wells/$code"
@@ -157,6 +163,16 @@ $byDateResponse = Invoke-Api "/api/wells/$code/production/$date"
 Assert-Equal 200 $byDateResponse.Status "GET /api/wells/$code/production/$date -> 200"
 $byDate = $byDateResponse.Body | ConvertFrom-Json
 Assert-Equal $date $byDate.date 'запись соответствует запрошенной дате'
+
+# 6b. Траектория ствола (этап 7): замеры в WGS84 и 404 для неизвестной скважины.
+$trajectoryResponse = Invoke-Api "/api/Wells/$($wells[0].wellId)/trajectory"
+Assert-Equal 200 $trajectoryResponse.Status 'GET /api/Wells/{wellId}/trajectory -> 200'
+$trajectory = @($trajectoryResponse.Body | ConvertFrom-Json)
+Assert-True ($trajectory.Count -gt 0) "траектория содержит замеры (count=$($trajectory.Count))"
+Assert-True ($null -ne $trajectory[0].latitude -and $null -ne $trajectory[0].longitude) 'замеры траектории в WGS84 (latitude/longitude)'
+
+$unknownTrajectory = Invoke-Api '/api/Wells/999999/trajectory'
+Assert-Equal 404 $unknownTrajectory.Status 'GET /api/Wells/999999/trajectory (нет скважины) -> 404'
 
 # 7. Ошибки: 404
 $unknownWell = Invoke-Api '/api/wells/1'

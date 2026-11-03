@@ -45,6 +45,31 @@ public sealed class EventClassificationTests
             },
             MessagingJson.Options);
 
+    private static string TrajectoryJson(int npdWellBoreCode = 5351) =>
+        JsonSerializer.Serialize(
+            new TrajectoryEvent
+            {
+                Data = new TrajectoryData
+                {
+                    NpdWellBoreCode = npdWellBoreCode,
+                    TdMd = 3510.00,
+                    TdTvd = 3138.06,
+                    Points = new[]
+                    {
+                        new TrajectoryPointData
+                        {
+                            Md = 145.90,
+                            Tvd = 145.90,
+                            Inclination = 0.0,
+                            Azimuth = 0.0,
+                            Easting = 435049.831,
+                            Northing = 6478560.825
+                        }
+                    }
+                }
+            },
+            MessagingJson.Options);
+
     [Theory]
     [MemberData(nameof(ServiceTypes))]
     public void Classify_NullOrWhitespace_ReturnsEmptyMessage(Type serviceType)
@@ -137,6 +162,22 @@ public sealed class EventClassificationTests
         var well = (WellRegisteredData)ReflectionHelper.GetProperty(result, "Well")!;
         Assert.Equal(5351, well.NpdWellBoreCode);
         Assert.Equal("W", well.Name);
+    }
+
+    [Theory]
+    [MemberData(nameof(ServiceTypes))]
+    public void Classify_ValidTrajectory_ReturnsTrajectoryKindWithData(Type serviceType)
+    {
+        var result = Classify(serviceType, TrajectoryJson(5351));
+
+        Assert.Equal("Trajectory", Kind(result));
+        Assert.Null(Error(result));
+
+        var trajectory = (TrajectoryData)ReflectionHelper.GetProperty(result, "Trajectory")!;
+        Assert.Equal(5351, trajectory.NpdWellBoreCode);
+        Assert.Equal(3510.00, trajectory.TdMd);
+        Assert.Equal(3138.06, trajectory.TdTvd);
+        Assert.Single(trajectory.Points);
     }
 
     [Theory]

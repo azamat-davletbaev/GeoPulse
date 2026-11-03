@@ -102,8 +102,19 @@ function popupHtml(well, monthly) {
 
   let html =
     `<strong>${escapeHtml(wellCaption(well))}</strong><br>` +
-    `Месторождение: ${escapeHtml(well.field)}<br>` +
-    `Добыча нефти (суммарно): ${stats === null ? '—' : formatNumber(stats.oil) + ' м³'}`;
+    `Месторождение: ${escapeHtml(well.field)}<br>`;
+
+  // Забой (TVD) и длина ствола (MD последней точки) приходят из /api/wells
+  // (поля tdTvd / tdMd), если траектория загружена в БД.
+  if (well.tdTvd !== null && well.tdTvd !== undefined) {
+    html += `Забой: ${formatNumber(well.tdTvd)} м<br>`;
+  }
+
+  if (well.tdMd !== null && well.tdMd !== undefined) {
+    html += `Длина ствола: ${formatNumber(well.tdMd)} м<br>`;
+  }
+
+  html += `Добыча нефти (суммарно): ${stats === null ? '—' : formatNumber(stats.oil) + ' м³'}`;
 
   if (stats === null) {
     return html;
@@ -130,7 +141,7 @@ function popupHtml(well, monthly) {
     `<br>Добыча воды (суммарно): ${formatNumber(stats.water)} м³` +
     `<br>Обводнённость: ${waterCut}` +
     `<br>Пик добычи нефти: ${peak}` +
-    `<br>Период работы: ${period}` +
+    `<br>Период добычи: ${period}` +
     `<br>Доля в добыче месторождения: ${share}`;
 
   const url = reportUrl(well);
@@ -301,6 +312,24 @@ function averageCenter(wells) {
   return [lat, lon];
 }
 
+// Слой линий траекторий: замеры приходят из /api/Wells/{wellId}/trajectory уже в WGS84.
+async function loadTrajectory(well) {
+  try {
+    const points = await fetchJson(`/api/Wells/${well.wellId}/trajectory`);
+    if (!Array.isArray(points) || points.length === 0) {
+      return null;
+    }
+
+    return L.polyline(
+      points.map((point) => [point.latitude, point.longitude]),
+      { color: '#2f6fed', weight: 2, opacity: 0.8 }
+    );
+  } catch (error) {
+    console.warn(`Траектория ${wellCaption(well)} не загружена`, error);
+    return null;
+  }
+}
+
 async function init() {
   map = L.map('map');
 
@@ -320,6 +349,14 @@ async function init() {
     marker.addTo(map);
     markers.set(well.wellId, marker);
   }
+
+  // Слой траекторий: линии замеров (WGS84) поверх маркеров устьев.
+  await Promise.all(located.map(async (well) => {
+    const line = await loadTrajectory(well);
+    if (line !== null) {
+      line.addTo(map);
+    }
+  }));
 
   if (located.length > 0) {
     // Фиксированный первичный вид: центр — средние координаты скважин, зум — константа.

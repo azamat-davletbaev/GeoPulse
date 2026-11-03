@@ -26,6 +26,12 @@ namespace GeoPulse.WebAPI.Models
         /// <summary>Долгота WGS84, градусы; null — координата не заполнена.</summary>
         public double? Longitude { get; init; }
 
+        /// <summary>Забой по стволу (Bottom Hole MD), м; null — траектория не загружена.</summary>
+        public double? TdMd { get; init; }
+
+        /// <summary>Забой по вертикали (Bottom Hole TVD), м; null — траектория не загружена.</summary>
+        public double? TdTvd { get; init; }
+
         /// <summary>Проекция модели скважины с координатами в DTO.</summary>
         /// <param name="well">Скважина с координатами устья.</param>
         public static WellDto FromModel(WellLocation well) => new()
@@ -36,7 +42,9 @@ namespace GeoPulse.WebAPI.Models
             Field = well.Field,
             Type = well.Type,
             Latitude = well.Latitude,
-            Longitude = well.Longitude
+            Longitude = well.Longitude,
+            TdMd = well.TdMd,
+            TdTvd = well.TdTvd
         };
     }
 }

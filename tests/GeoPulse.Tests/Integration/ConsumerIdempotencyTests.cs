@@ -82,6 +82,40 @@ public sealed class ConsumerIdempotencyTests
     }
 
     [Fact]
+    public async Task Trajectory_DeliveredTwice_InsertedOnce()
+    {
+        const int npdCode = 5353;
+        var topic = $"production-daily-{Guid.NewGuid():N}";
+        var dlqTopic = $"production-daily-dlq-{Guid.NewGuid():N}";
+
+        await KafkaTestUtils.CreateTopicAsync(_fixture.KafkaBootstrapServers, topic);
+        await KafkaTestUtils.CreateTopicAsync(_fixture.KafkaBootstrapServers, dlqTopic);
+
+        await KafkaTestUtils.ProduceAsync(_fixture.KafkaBootstrapServers, topic, npdCode.ToString(), WellJson(npdCode));
+        var trajectory = TrajectoryJson(npdCode);
+        await KafkaTestUtils.ProduceAsync(_fixture.KafkaBootstrapServers, topic, npdCode.ToString(), trajectory);
+        await KafkaTestUtils.ProduceAsync(_fixture.KafkaBootstrapServers, topic, npdCode.ToString(), trajectory);
+
+        using var dlqProducer = KafkaTestUtils.BuildProducer(_fixture.KafkaBootstrapServers);
+        var service = BuildConsumerService(topic, dlqTopic, dlqProducer, out var provider);
+
+        try
+        {
+            await service.StartAsync(CancellationToken.None);
+            await WaitUntilAsync(async () => await CountTrajectoryPointsAsync(npdCode) == 2);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+            provider.Dispose();
+        }
+
+        Assert.Equal(1, await CountWellsAsync(npdCode));
+        Assert.Equal(2, await CountTrajectoryPointsAsync(npdCode));
+        Assert.Equal(1, await CountTrajectoryMetaAsync(npdCode));
+    }
+
+    [Fact]
     public async Task ProductionDaily_UnknownWell_GoesToDlq()
     {
         const int unknownCode = 99999;
@@ -159,6 +193,30 @@ public sealed class ConsumerIdempotencyTests
         return await db.DailyProduction.CountAsync(item => item.WellId == well.Id && item.Date == date);
     }
 
+    private async Task<int> CountTrajectoryPointsAsync(int npdCode)
+    {
+        await using var db = _fixture.CreateDbContext();
+        var well = await db.Wells.AsNoTracking().FirstOrDefaultAsync(w => w.NpdWellBoreCode == npdCode);
+        if (well is null)
+        {
+            return 0;
+        }
+
+        return await db.WellTrajectories.CountAsync(item => item.WellId == well.Id);
+    }
+
+    private async Task<int> CountTrajectoryMetaAsync(int npdCode)
+    {
+        await using var db = _fixture.CreateDbContext();
+        var well = await db.Wells.AsNoTracking().FirstOrDefaultAsync(w => w.NpdWellBoreCode == npdCode);
+        if (well is null)
+        {
+            return 0;
+        }
+
+        return await db.WellTrajectoryMeta.CountAsync(item => item.WellId == well.Id);
+    }
+
     private static async Task WaitUntilAsync(Func<Task<bool>> condition, int timeoutMilliseconds = 30_000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
@@ -188,6 +246,40 @@ public sealed class ConsumerIdempotencyTests
             new DailyProductionEvent
             {
                 Data = new DailyProductionData { NpdWellBoreCode = npdCode, Date = date, OilVol = 100.5 }
+            },
+            MessagingJson.Options);
+
+    private static string TrajectoryJson(int npdCode) =>
+        JsonSerializer.Serialize(
+            new TrajectoryEvent
+            {
+                Data = new TrajectoryData
+                {
+                    NpdWellBoreCode = npdCode,
+                    TdMd = 3510.00,
+                    TdTvd = 3138.06,
+                    Points = new[]
+                    {
+                        new TrajectoryPointData
+                        {
+                            Md = 145.90,
+                            Tvd = 145.90,
+                            Inclination = 0.0,
+                            Azimuth = 0.0,
+                            Easting = 435049.831,
+                            Northing = 6478560.825
+                        },
+                        new TrajectoryPointData
+                        {
+                            Md = 3510.00,
+                            Tvd = 3138.06,
+                            Inclination = 54.67,
+                            Azimuth = 202.72,
+                            Easting = 435653.833,
+                            Northing = 6477677.554
+                        }
+                    }
+                }
             },
             MessagingJson.Options);
 }

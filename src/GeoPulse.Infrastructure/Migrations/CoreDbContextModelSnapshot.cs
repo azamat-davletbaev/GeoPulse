@@ -203,6 +203,60 @@ namespace GeoPulse.Infrastructure.Migrations
                     b.ToTable("well_locations", (string)null);
                 });
 
+            modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellTrajectoryEntity", b =>
+                {
+                    b.Property<int>("WellId")
+                        .HasColumnType("integer")
+                        .HasColumnName("well_id");
+
+                    b.Property<double>("Md")
+                        .HasColumnType("double precision")
+                        .HasColumnName("md");
+
+                    b.Property<double>("Azimuth")
+                        .HasColumnType("double precision")
+                        .HasColumnName("azimuth");
+
+                    b.Property<double>("Easting")
+                        .HasColumnType("double precision")
+                        .HasColumnName("easting");
+
+                    b.Property<double>("Inclination")
+                        .HasColumnType("double precision")
+                        .HasColumnName("inclination");
+
+                    b.Property<double>("Northing")
+                        .HasColumnType("double precision")
+                        .HasColumnName("northing");
+
+                    b.Property<double>("Tvd")
+                        .HasColumnType("double precision")
+                        .HasColumnName("tvd");
+
+                    b.HasKey("WellId", "Md");
+
+                    b.ToTable("well_trajectories", (string)null);
+                });
+
+            modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellTrajectoryMetaEntity", b =>
+                {
+                    b.Property<int>("WellId")
+                        .HasColumnType("integer")
+                        .HasColumnName("well_id");
+
+                    b.Property<double?>("TdMd")
+                        .HasColumnType("double precision")
+                        .HasColumnName("td_md");
+
+                    b.Property<double?>("TdTvd")
+                        .HasColumnType("double precision")
+                        .HasColumnName("td_tvd");
+
+                    b.HasKey("WellId");
+
+                    b.ToTable("well_trajectory_meta", (string)null);
+                });
+
             modelBuilder.Entity("GeoPulse.Infrastructure.Entities.DailyProductionEntity", b =>
                 {
                     b.HasOne("GeoPulse.Infrastructure.Entities.WellEntity", "Well")
@@ -227,11 +281,39 @@ namespace GeoPulse.Infrastructure.Migrations
                     b.Navigation("Well");
                 });
 
+            modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellTrajectoryEntity", b =>
+                {
+                    b.HasOne("GeoPulse.Infrastructure.Entities.WellEntity", "Well")
+                        .WithMany("WellTrajectories")
+                        .HasForeignKey("WellId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_well_trajectories_wells");
+
+                    b.Navigation("Well");
+                });
+
+            modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellTrajectoryMetaEntity", b =>
+                {
+                    b.HasOne("GeoPulse.Infrastructure.Entities.WellEntity", "Well")
+                        .WithOne("WellTrajectoryMeta")
+                        .HasForeignKey("GeoPulse.Infrastructure.Entities.WellTrajectoryMetaEntity", "WellId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_well_trajectory_meta_wells");
+
+                    b.Navigation("Well");
+                });
+
             modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellEntity", b =>
                 {
                     b.Navigation("DailyProduction");
 
                     b.Navigation("WellLocation");
+
+                    b.Navigation("WellTrajectories");
+
+                    b.Navigation("WellTrajectoryMeta");
                 });
 #pragma warning restore 612, 618
         }

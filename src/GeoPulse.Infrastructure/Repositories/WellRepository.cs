@@ -52,6 +52,7 @@ namespace GeoPulse.Infrastructure.Repositories
             var entities = await _db.Wells
                 .AsNoTracking()
                 .Include(well => well.WellLocation)
+                .Include(well => well.WellTrajectoryMeta)
                 .OrderBy(well => well.NpdWellBoreCode)
                 .ToListAsync(cancellationToken);
 

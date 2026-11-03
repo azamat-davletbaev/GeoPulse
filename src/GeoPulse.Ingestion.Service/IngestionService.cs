@@ -38,6 +38,8 @@ namespace GeoPulse.Ingestion.Service
                 throw new InvalidOperationException("Не задан Volve:ProductionWorkbook в appsettings.json.");
             }
 
+            var wellboreRoot = _configuration["Volve:WellboreRoot"];
+
             var bootstrapServers = _configuration["Kafka:BootstrapServers"];
             if (string.IsNullOrWhiteSpace(bootstrapServers))
             {
@@ -154,6 +156,7 @@ namespace GeoPulse.Ingestion.Service
             using var producer = new ProducerBuilder<string, string>(producerConfig).Build();
 
             var wellEvents = 0;
+            var trajectoryEvents = 0;
             var dailyEvents = 0;
 
             // 1. Скважины: сначала регистрируем все стволы, чтобы консьюмер мог их разрешить.
@@ -163,7 +166,34 @@ namespace GeoPulse.Ingestion.Service
                 wellEvents++;
             }
 
-            // 2. Добыча: ключ = npdWellBoreCode — сохраняет порядок событий в пределах скважины.
+            // 2. Траектории: после регистрации скважин публикуем well.trajectory (один event на ствол).
+            if (!string.IsNullOrWhiteSpace(wellboreRoot))
+            {
+                var trajectoryMap = BuildTrajectoryMap(wellboreRoot, wellsByNpd);
+                foreach (var (npd, filePath) in trajectoryMap.OrderBy(pair => pair.Key))
+                {
+                    var trajectory = ReadTrajectory(filePath);
+                    if (trajectory is null)
+                    {
+                        _logger.LogWarning("Траектория для скважины {Npd} не распознана: {Path}", npd, filePath);
+                        continue;
+                    }
+
+                    Publish(producer, topic, npd, new TrajectoryEvent
+                    {
+                        Data = new TrajectoryData
+                        {
+                            NpdWellBoreCode = npd,
+                            TdMd = trajectory.TdMd,
+                            TdTvd = trajectory.TdTvd,
+                            Points = trajectory.Points
+                        }
+                    });
+                    trajectoryEvents++;
+                }
+            }
+
+            // 3. Добыча: ключ = npdWellBoreCode — сохраняет порядок событий в пределах скважины.
             foreach (var row in dailyRows)
             {
                 Publish(producer, topic, row.Data.NpdWellBoreCode, new DailyProductionEvent { Data = row.Data });
@@ -173,14 +203,15 @@ namespace GeoPulse.Ingestion.Service
             producer.Flush(TimeSpan.FromSeconds(30));
 
             _logger.LogInformation(
-                "Публикация завершена: прочитано строк {Read}, пропущено (пустой ключ) {Skipped}, опубликовано well.registered {Wells}, production.daily {Daily}",
-                rowsRead, rowsSkippedNullKey, wellEvents, dailyEvents);
+                "Публикация завершена: прочитано строк {Read}, пропущено (пустой ключ) {Skipped}, опубликовано well.registered {Wells}, well.trajectory {Trajectory}, production.daily {Daily}",
+                rowsRead, rowsSkippedNullKey, wellEvents, trajectoryEvents, dailyEvents);
 
             Console.WriteLine();
             Console.WriteLine("=== ИТОГОВАЯ СТАТИСТИКА ===");
             Console.WriteLine($"Прочитано строк:              {rowsRead}");
             Console.WriteLine($"Пропущено (пустой ключ):      {rowsSkippedNullKey}");
             Console.WriteLine($"Опубликовано well.registered: {wellEvents}");
+            Console.WriteLine($"Опубликовано well.trajectory: {trajectoryEvents}");
             Console.WriteLine($"Опубликовано production.daily: {dailyEvents}");
         }
 
@@ -198,6 +229,49 @@ namespace GeoPulse.Ingestion.Service
                         _logger.LogError("Ошибка доставки в Kafka: {Reason}", report.Error.Reason);
                     }
                 });
+        }
+
+        /// <summary>Сопоставляет коды НПД с файлами *_ACTUAL по имени каталога ствола (имя из Excel → «/» → «_»).</summary>
+        private static Dictionary<int, string> BuildTrajectoryMap(
+            string wellboreRoot,
+            Dictionary<int, WellRegisteredData> wellsByNpd)
+        {
+            var byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var well in wellsByNpd.Values)
+            {
+                byName[NormalizeWellName(well.Name)] = well.NpdWellBoreCode;
+            }
+
+            var map = new Dictionary<int, string>();
+            if (!Directory.Exists(wellboreRoot))
+            {
+                return map;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(wellboreRoot, "*_ACTUAL", SearchOption.AllDirectories))
+            {
+                var dirName = Path.GetFileName(Path.GetDirectoryName(file)) ?? string.Empty;
+                if (byName.TryGetValue(dirName, out var npd) && !map.ContainsKey(npd))
+                {
+                    map[npd] = file;
+                }
+            }
+
+            return map;
+        }
+
+        private static string NormalizeWellName(string name) => name.Replace("/", "_");
+
+        private static ParsedTrajectory? ReadTrajectory(string filePath)
+        {
+            try
+            {
+                return TrajectoryParser.Parse(File.ReadAllText(filePath));
+            }
+            catch (IOException)
+            {
+                return null;
+            }
         }
 
         private static object? Cell(DataRow row, string column) =>

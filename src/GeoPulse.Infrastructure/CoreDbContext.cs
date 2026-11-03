@@ -20,6 +20,12 @@ namespace GeoPulse.Infrastructure
         /// <summary>Координаты устьев скважин.</summary>
         public DbSet<WellLocationEntity> WellLocations => Set<WellLocationEntity>();
 
+        /// <summary>Замеры траекторий стволов.</summary>
+        public DbSet<WellTrajectoryEntity> WellTrajectories => Set<WellTrajectoryEntity>();
+
+        /// <summary>Метаданные траекторий (забой TD).</summary>
+        public DbSet<WellTrajectoryMetaEntity> WellTrajectoryMeta => Set<WellTrajectoryMetaEntity>();
+
         /// <summary>Помесячные агрегаты добычи (схема analytics).</summary>
         public DbSet<MonthlyProductionEntity> MonthlyProduction => Set<MonthlyProductionEntity>();
 
@@ -63,6 +69,33 @@ namespace GeoPulse.Infrastructure
                     .WithOne(well => well.WellLocation)
                     .HasForeignKey<WellLocationEntity>(location => location.WellId)
                     .HasConstraintName("fk_well_locations_wells")
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<WellTrajectoryEntity>(builder =>
+            {
+                builder.ToTable("well_trajectories");
+                builder.HasKey(item => new { item.WellId, item.Md });
+                builder.Property(item => item.Tvd).IsRequired();
+                builder.Property(item => item.Inclination).IsRequired();
+                builder.Property(item => item.Azimuth).IsRequired();
+                builder.Property(item => item.Easting).IsRequired();
+                builder.Property(item => item.Northing).IsRequired();
+                builder.HasOne(item => item.Well)
+                    .WithMany(well => well.WellTrajectories)
+                    .HasForeignKey(item => item.WellId)
+                    .HasConstraintName("fk_well_trajectories_wells")
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<WellTrajectoryMetaEntity>(builder =>
+            {
+                builder.ToTable("well_trajectory_meta");
+                builder.HasKey(meta => meta.WellId);
+                builder.HasOne(meta => meta.Well)
+                    .WithOne(well => well.WellTrajectoryMeta)
+                    .HasForeignKey<WellTrajectoryMetaEntity>(meta => meta.WellId)
+                    .HasConstraintName("fk_well_trajectory_meta_wells")
                     .OnDelete(DeleteBehavior.Cascade);
             });
 

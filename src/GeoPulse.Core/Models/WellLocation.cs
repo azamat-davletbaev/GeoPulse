@@ -23,5 +23,11 @@ namespace GeoPulse.Core.Models
 
         /// <summary>Долгота WGS84, градусы; null — координата не заполнена.</summary>
         public double? Longitude { get; set; }
+
+        /// <summary>Забой по стволу (Bottom Hole MD), м; null — траектория не загружена.</summary>
+        public double? TdMd { get; set; }
+
+        /// <summary>Забой по вертикали (Bottom Hole TVD), м; null — траектория не загружена.</summary>
+        public double? TdTvd { get; set; }
     }
 }

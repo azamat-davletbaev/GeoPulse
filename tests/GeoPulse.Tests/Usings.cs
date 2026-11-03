@@ -7,6 +7,7 @@ global using Xunit;
 global using GeoPulse.CHIngest;
 global using GeoPulse.Consumer;
 global using GeoPulse.Core.Events;
+global using GeoPulse.Core.Geometry;
 global using GeoPulse.Core.Models;
 global using GeoPulse.Core.Repositories;
 global using GeoPulse.Infrastructure;

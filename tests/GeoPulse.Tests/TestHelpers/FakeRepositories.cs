@@ -34,6 +34,20 @@ internal sealed class FakeWellRepository : IWellRepository
         Task.FromResult(_wells.Any(well => well.NpdWellBoreCode == npdWellBoreCode));
 }
 
+/// <summary>In-memory подмена IWellTrajectoryRepository для контрактных тестов траекторий.</summary>
+internal sealed class FakeWellTrajectoryRepository : IWellTrajectoryRepository
+{
+    private readonly IReadOnlyList<WellTrajectory> _trajectories;
+
+    public FakeWellTrajectoryRepository(IEnumerable<WellTrajectory>? trajectories = null)
+    {
+        _trajectories = trajectories?.ToList() ?? new List<WellTrajectory>();
+    }
+
+    public Task<IReadOnlyList<WellTrajectory>> GetByWellIdAsync(int wellId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(_trajectories);
+}
+
 /// <summary>In-memory подмена IDailyProductionRepository (в контрактных тестах не используется).</summary>
 internal sealed class FakeDailyProductionRepository : IDailyProductionRepository
 {

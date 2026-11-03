@@ -32,7 +32,19 @@ namespace GeoPulse.Infrastructure.Repositories
             Field = entity.Field,
             Type = entity.Type,
             Latitude = entity.WellLocation?.Latitude,
-            Longitude = entity.WellLocation?.Longitude
+            Longitude = entity.WellLocation?.Longitude,
+            TdMd = entity.WellTrajectoryMeta?.TdMd,
+            TdTvd = entity.WellTrajectoryMeta?.TdTvd
+        };
+
+        public static WellTrajectory ToModel(WellTrajectoryEntity entity) => new()
+        {
+            Md = entity.Md,
+            Tvd = entity.Tvd,
+            Inclination = entity.Inclination,
+            Azimuth = entity.Azimuth,
+            Easting = entity.Easting,
+            Northing = entity.Northing
         };
 
         public static DailyProduction ToModel(DailyProductionEntity entity) => new()

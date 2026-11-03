@@ -29,6 +29,7 @@ public sealed class WellsContractTests
         {
             services.AddSingleton<IWellRepository>(new FakeWellRepository(locations: locations));
             services.AddSingleton<IDailyProductionRepository>(new FakeDailyProductionRepository());
+            services.AddSingleton<IWellTrajectoryRepository>(new FakeWellTrajectoryRepository());
         });
 
         try

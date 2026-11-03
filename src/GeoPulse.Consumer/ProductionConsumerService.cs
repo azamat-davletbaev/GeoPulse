@@ -123,6 +123,24 @@ namespace GeoPulse.Consumer
                             }
                             break;
                         }
+                        case MessageKind.Trajectory:
+                        {
+                            await FlushDailyBatchAsync(db, batch, consumer, counters);
+
+                            var wellId = await ResolveWellIdAsync(db, classification.Trajectory!.NpdWellBoreCode);
+                            if (wellId is null)
+                            {
+                                await PublishDlqAsync(dlqTopic, result, "well.not.found");
+                                counters.ToDlq++;
+                                consumer.Commit(result);
+                                break;
+                            }
+
+                            await UpsertTrajectoryAsync(db, wellId.Value, classification.Trajectory);
+                            counters.Trajectories++;
+                            consumer.Commit(result);
+                            break;
+                        }
                         default:
                         {
                             await FlushDailyBatchAsync(db, batch, consumer, counters);
@@ -151,8 +169,8 @@ namespace GeoPulse.Consumer
                 _dlqProducer.Flush(TimeSpan.FromSeconds(10));
 
                 _logger.LogInformation(
-                    "Консьюмер завершён: получено {Received}, вставлено {Inserted}, пропущено (дубликаты) {Skipped}, в DLQ {Dlq}, скважин {Wells}",
-                    counters.Received, counters.Inserted, counters.Skipped, counters.ToDlq, counters.Wells);
+                    "Консьюмер завершён: получено {Received}, вставлено {Inserted}, пропущено (дубликаты) {Skipped}, в DLQ {Dlq}, скважин {Wells}, траекторий {Trajectories}",
+                    counters.Received, counters.Inserted, counters.Skipped, counters.ToDlq, counters.Wells, counters.Trajectories);
             }
         }
 
@@ -186,6 +204,7 @@ namespace GeoPulse.Consumer
         {
             public long Received;
             public long Wells;
+            public long Trajectories;
             public long Inserted;
             public long Skipped;
             public long ToDlq;
@@ -213,6 +232,72 @@ namespace GeoPulse.Consumer
 
             return well?.Id;
         }
+
+        /// <summary>Пишет траекторию: метаданные забоя (1:1, last wins) и замеры (reject дубликатов по (well_id, md)).</summary>
+        private static async Task UpsertTrajectoryAsync(CoreDbContext db, int wellId, TrajectoryData trajectory)
+        {
+            const string metaSql =
+                "INSERT INTO well_trajectory_meta (well_id, td_md, td_tvd) VALUES (@p0, @p1, @p2) " +
+                "ON CONFLICT (well_id) DO UPDATE SET td_md = EXCLUDED.td_md, td_tvd = EXCLUDED.td_tvd";
+
+            await db.Database.ExecuteSqlRawAsync(
+                metaSql,
+                new NpgsqlParameter("@p0", NpgsqlDbType.Integer) { Value = wellId },
+                new NpgsqlParameter("@p1", NpgsqlDbType.Double) { Value = (object?)trajectory.TdMd ?? DBNull.Value },
+                new NpgsqlParameter("@p2", NpgsqlDbType.Double) { Value = (object?)trajectory.TdTvd ?? DBNull.Value });
+
+            if (trajectory.Points.Count == 0)
+            {
+                return;
+            }
+
+            var sql = new StringBuilder(trajectory.Points.Count * 90 + 160);
+            sql.Append("INSERT INTO well_trajectories (well_id, md, tvd, inclination, azimuth, easting, northing) VALUES ");
+
+            var parameters = new List<NpgsqlParameter>(trajectory.Points.Count * 7);
+            for (var row = 0; row < trajectory.Points.Count; row++)
+            {
+                if (row > 0)
+                {
+                    sql.Append(',');
+                }
+
+                var point = trajectory.Points[row];
+                sql.Append('(');
+                for (var column = 0; column < TrajectoryColumns.Length; column++)
+                {
+                    if (column > 0)
+                    {
+                        sql.Append(',');
+                    }
+
+                    var name = $"@t{parameters.Count}";
+                    sql.Append(name);
+                    parameters.Add(new NpgsqlParameter(name, TrajectoryColumns[column].Type)
+                    {
+                        Value = TrajectoryColumns[column].Value(wellId, point)
+                    });
+                }
+
+                sql.Append(')');
+            }
+
+            sql.Append(" ON CONFLICT (well_id, md) DO NOTHING");
+
+            await db.Database.ExecuteSqlRawAsync(sql.ToString(), parameters);
+        }
+
+        /// <summary>Колонки well_trajectories в порядке параметров upsert-запроса.</summary>
+        private static readonly (string Column, NpgsqlDbType Type, Func<int, TrajectoryPointData, object> Value)[] TrajectoryColumns =
+        {
+            ("well_id", NpgsqlDbType.Integer, (wellId, _) => wellId),
+            ("md", NpgsqlDbType.Double, (_, point) => point.Md),
+            ("tvd", NpgsqlDbType.Double, (_, point) => point.Tvd),
+            ("inclination", NpgsqlDbType.Double, (_, point) => point.Inclination),
+            ("azimuth", NpgsqlDbType.Double, (_, point) => point.Azimuth),
+            ("easting", NpgsqlDbType.Double, (_, point) => point.Easting),
+            ("northing", NpgsqlDbType.Double, (_, point) => point.Northing)
+        };
 
         /// <summary>Вставляет батч добычи одним INSERT ... ON CONFLICT DO NOTHING; возвращает число вставленных строк.</summary>
         private static async Task<int> InsertDailyBatchAsync(CoreDbContext db, IReadOnlyList<DailyProduction> batch)
@@ -327,6 +412,7 @@ namespace GeoPulse.Consumer
         {
             Well,
             Daily,
+            Trajectory,
             Invalid
         }
 
@@ -334,6 +420,7 @@ namespace GeoPulse.Consumer
             MessageKind Kind,
             WellRegisteredData? Well,
             DailyProductionData? Daily,
+            TrajectoryData? Trajectory,
             string? Error);
 
         /// <summary>Разбирает сообщение: определяет тип/версию схемы и десериализует данные.</summary>
@@ -341,7 +428,7 @@ namespace GeoPulse.Consumer
         {
             if (string.IsNullOrWhiteSpace(raw))
             {
-                return new Classification(MessageKind.Invalid, null, null, "empty.message");
+                return new Classification(MessageKind.Invalid, null, null, null, "empty.message");
             }
 
             EventHeader header;
@@ -351,12 +438,12 @@ namespace GeoPulse.Consumer
             }
             catch (JsonException)
             {
-                return new Classification(MessageKind.Invalid, null, null, "unparseable.json");
+                return new Classification(MessageKind.Invalid, null, null, null, "unparseable.json");
             }
 
             if (header.SchemaVersion != EventTypes.SchemaVersion)
             {
-                return new Classification(MessageKind.Invalid, null, null, "unknown.schemaVersion");
+                return new Classification(MessageKind.Invalid, null, null, null, "unknown.schemaVersion");
             }
 
             switch (header.EventType)
@@ -367,12 +454,12 @@ namespace GeoPulse.Consumer
                     {
                         var evt = JsonSerializer.Deserialize<WellRegisteredEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, "missing.data")
-                            : new Classification(MessageKind.Well, evt.Data, null, null);
+                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            : new Classification(MessageKind.Well, evt.Data, null, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, "unparseable.well.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.well.event");
                     }
                 }
                 case EventTypes.ProductionDaily:
@@ -381,16 +468,30 @@ namespace GeoPulse.Consumer
                     {
                         var evt = JsonSerializer.Deserialize<DailyProductionEvent>(raw, MessagingJson.Options);
                         return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, "missing.data")
-                            : new Classification(MessageKind.Daily, null, evt.Data, null);
+                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            : new Classification(MessageKind.Daily, null, evt.Data, null, null);
                     }
                     catch (JsonException)
                     {
-                        return new Classification(MessageKind.Invalid, null, null, "unparseable.daily.event");
+                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.daily.event");
+                    }
+                }
+                case EventTypes.Trajectory:
+                {
+                    try
+                    {
+                        var evt = JsonSerializer.Deserialize<TrajectoryEvent>(raw, MessagingJson.Options);
+                        return evt?.Data is null
+                            ? new Classification(MessageKind.Invalid, null, null, null, "missing.data")
+                            : new Classification(MessageKind.Trajectory, null, null, evt.Data, null);
+                    }
+                    catch (JsonException)
+                    {
+                        return new Classification(MessageKind.Invalid, null, null, null, "unparseable.trajectory.event");
                     }
                 }
                 default:
-                    return new Classification(MessageKind.Invalid, null, null, $"unknown.eventType:{header.EventType}");
+                    return new Classification(MessageKind.Invalid, null, null, null, $"unknown.eventType:{header.EventType}");
             }
         }
 
