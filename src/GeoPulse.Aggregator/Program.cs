@@ -8,6 +8,9 @@ var builder = Host.CreateApplicationBuilder(args);
 // appsettings.json ищем рядом с dll (AppContext.BaseDirectory), а не по текущей рабочей директории.
 builder.Configuration.SetBasePath(AppContext.BaseDirectory);
 builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
+// Env-переменные добавляем после JSON, чтобы при запуске в контейнере значения из окружения
+// (ClickHouse__ConnectionString, RecalcIntervalSeconds) переопределяли appsettings.json.
+builder.Configuration.AddEnvironmentVariables();
 
 builder.Services.AddHostedService<AggregatorService>();
 

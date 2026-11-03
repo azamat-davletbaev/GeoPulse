@@ -1,6 +1,13 @@
 **/bin/
 **/obj/
-data/
 .git/
 docs/
 *.md
+# Данные Volve: в контекст сборки попадает только минимальный набор для Ingestion
+# (production xlsx + WellWellbore). Большие/неиспользуемые части (EDM.XML ~275 МБ,
+# отчёты бурения HTML/PDF/XML) исключаются, чтобы не раздувать контекст локальных сборок.
+data/*
+!data/Volve_Production_data/
+!data/Volve_Well_technical_data/
+data/Volve_Well_technical_data/*
+!data/Volve_Well_technical_data/WellWellbore/

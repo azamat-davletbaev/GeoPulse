@@ -63,8 +63,8 @@ function renderChart(monthly) {
         {
           label: 'Нефть, м³',
           data: monthly.map((m) => m.oil),
-          borderColor: '#2f6fed',
-          backgroundColor: 'rgba(47, 111, 237, 0.10)',
+          borderColor: '#8b4513',
+          backgroundColor: 'rgba(139, 69, 19, 0.10)',
           fill: true,
           tension: 0.25,
           pointRadius: 0
@@ -72,8 +72,8 @@ function renderChart(monthly) {
         {
           label: 'Вода, м³',
           data: monthly.map((m) => m.water),
-          borderColor: '#16a085',
-          backgroundColor: 'rgba(22, 160, 133, 0.10)',
+          borderColor: '#3b82c4',
+          backgroundColor: 'rgba(59, 130, 196, 0.10)',
           fill: true,
           tension: 0.25,
           pointRadius: 0

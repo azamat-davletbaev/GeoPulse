@@ -45,7 +45,9 @@ internal sealed class FakeWellTrajectoryRepository : IWellTrajectoryRepository
     }
 
     public Task<IReadOnlyList<WellTrajectory>> GetByWellIdAsync(int wellId, CancellationToken cancellationToken = default) =>
-        Task.FromResult(_trajectories);
+        Task.FromResult<IReadOnlyList<WellTrajectory>>(
+            // Контракт репозитория совпадает с реальной реализацией (EF): точки строго по возрастанию MD.
+            _trajectories.OrderBy(item => item.Md).ToList());
 }
 
 /// <summary>In-memory подмена IDailyProductionRepository (в контрактных тестах не используется).</summary>

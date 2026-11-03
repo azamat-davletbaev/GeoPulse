@@ -1,24 +1,25 @@
 # GeoPulse
 
+[![CI](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/ci.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/ci.yml)
+
 Веб-система мониторинга добычи нефти: импорт суточных показателей скважин через событийный пайплайн (Apache Kafka), хранение в PostgreSQL и ClickHouse, выдача точечных данных и аналитики через REST API. Демонстрационный кейс построен на открытых данных месторождения **Volve** (норвежский шельф, Северное море).
 
 **Стек:** .NET 10, ASP.NET Core Web API, PostgreSQL, ClickHouse, Apache Kafka, EF Core, Docker Compose.
 
 ## Данные проекта
 
-Проект использует открытый набор данных Volve, опубликованный компанией Equinor (Норвегия) под **Equinor Open Data Licence**.
+Проект использует открытый набор данных Volve, опубликованный компанией Equinor (Норвегия) под **Equinor Open Data Licence** (CC BY-NC-SA 4.0). Источник — <https://www.equinor.com/energy/volve-data-sharing>.
 
-Данные **не хранятся в репозитории**: папка `data/` добавлена в `.gitignore`. Их нужно скачать самостоятельно с официальной страницы:
-
-<https://www.equinor.com/energy/volve-data-sharing>
-
-Полный набор — около 40 000 файлов общим объёмом более 4 ТБ; качать целиком не нужно. Достаточно архива **Production data**. Файл положить по пути:
+Полный набор — около 40 000 файлов общим объёмом более 4 ТБ; качать целиком не нужно. Для работы достаточно двух частей, которые хранятся в репозитории (единицы МБ) и запекаются в образ `geopulse-ingestion` (см. `DEPLOY.md`):
 
 ```
 data/Volve_Production_data/Volve production data.xlsx
+data/Volve_Well_technical_data/WellWellbore/**
 ```
 
-Этот путь указан в `src/GeoPulse.Ingestion.Service/appsettings.json` (`Volve:ProductionWorkbook`). Остальные папки набора для текущих этапов не используются (WITSML-данные из `Volve_Well_technical_data` понадобятся на этапе 7).
+Остальные части набора (EDM.XML, отчёты бурения HTML/PDF/XML — порядка 385 МБ) парсером не используются и в репозиторий не входят (`.gitignore`/`.dockerignore`).
+
+Пути к данным заданы в `src/GeoPulse.Ingestion.Service/appsettings.json` (`Volve:ProductionWorkbook`, `Volve:WellboreRoot`).
 
 ## Архитектура
 
@@ -136,6 +137,18 @@ docker exec -i geopulse-postgres psql -U geopulse -d geopulse_core < sql/seed_we
 
 Повторный запуск безопасен: `ON CONFLICT DO UPDATE` по `well_id` оставляет ровно 7 строк в `well_locations`.
 
+## Веб-клиент (карта, панель, отчёты)
+
+Фронт — статика из `web/`, раздаётся самим WebAPI. Leaflet 1.9.4 и Chart.js 4.4.1 лежат локально в `web/vendor/` (без CDN), иконка вкладки — `web/favicon.ico` (16/32/48/64 px, та же символика: голубая траектория, залитая точка устья, незалитый кружок забоя).
+
+Карта: семь тёмно-серых траекторий (линии по возрастанию MD), залитые чёрные устья в белой обводке и незалитые кружки забоев. Первичный вид — `fitBounds` по устьям и траекториям с ограничителем `maxZoom`.
+
+![Карта скважин Volve: траектории, устья и забои](docs/screenshots/map-trajectories.png)
+
+Панель скважины: помесячный график добычи — нефть коричневая, вода голубая.
+
+![Панель скважины: добыча нефти и воды по месяцам](docs/screenshots/panel-chart.png)
+
 ## Смок-тест полного цикла
 
 После полного прогона: в `daily_production` — 15 634 записи без дублей (`COUNT(DISTINCT (well_id, date))` = 15 634), в `wells` — 7 скважин, отставание групп консьюмеров (`geopulse-consumer`, `geopulse-chingest`) — 0 по всем партициям, DLQ пуста. Проверка API на этих же данных — смок-тест из раздела «Смок-тест API».
@@ -148,7 +161,7 @@ docker exec -i geopulse-postgres psql -U geopulse -d geopulse_core < sql/seed_we
 | `SELECT count() FROM gp.wells FINAL` | 7 |
 | `SELECT count() FROM gp.monthly_production` | 526 |
 | `GET /api/Analytics/summary` → `totalOilVol` | ≈ 10 037 080.61 |
-| Смок-тест API | 44 проверки из 44 |
+| Смок-тест API | 51 проверка из 51 |
 
 ## REST API: точечные данные и аналитика
 
@@ -193,13 +206,28 @@ curl http://localhost:5146/api/Analytics/summary
 
 ## Смок-тест API
 
-Повторяемая проверка API на заполненной базе: health, список и карточка скважины, пагинация, фильтр по датам, обе сортировки, запись за дату, ответы `400`/`404`, отчёты (сводный `monthly.xlsx` и персональный `wells/{wellId}.xlsx`), доступность Swagger.
+Повторяемая проверка API на заполненной базе: health, список и карточка скважины, пагинация, фильтр по датам, обе сортировки, запись за дату, траектория ствола (замеры в WGS84 и `404` для неизвестной скважины), ответы `400`/`404`, отчёты (сводный `monthly.xlsx` и персональный `wells/{wellId}.xlsx`), доступность Swagger.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tests/smoke/webapi-smoke.ps1 -BaseUrl http://localhost:5146
 ```
 
-Скрипт печатает результат каждой проверки и завершается с кодом `1`, если есть проваленные проверки; успешный прогон — 44 проверки и сообщение «Все проверки пройдены: 44». `-ExecutionPolicy Bypass` нужен, если в системе запрещено выполнение локальных скриптов.
+Скрипт печатает результат каждой проверки и завершается с кодом `1`, если есть проваленные проверки; успешный прогон — 51 проверка и сообщение «Все проверки пройдены: 51». `-ExecutionPolicy Bypass` нужен, если в системе запрещено выполнение локальных скриптов.
+
+## Проверка фронтенда
+
+Отдельная проверка клиентской логики `web/app.js` — без браузера и без Node.js на хосте (Node запускается в контейнере). Стенд `tests/frontend/webapp-check.js` подменяет Leaflet, DOM и `fetch` заглушками, повторяющими существенное поведение Leaflet (`L.latLng` бросает `Invalid LatLng object` на `NaN`/`undefined`), и прогоняет два сценария:
+
+| Сценарий | Что проверяется |
+| --- | --- |
+| `mixed` | валидные и битые данные вперемешку: линия строится только по траекториям с двумя и более валидными точками, маркеры устьев — только по валидным координатам, `HTTP 500` по одной скважине не мешает остальным, `fitBounds` включает траектории и ограничен `maxZoom` |
+| `empty` | валидных координат нет вовсе: `init` не падает, карта остаётся на нейтральном виде |
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/frontend/run-webapp-check.ps1
+```
+
+Скрипт прогоняет оба сценария через `node:20-alpine` и завершается с кодом `1`, если хотя бы один сценарий провален. Проверка не входит в `dotnet test` (это не xUnit-тест) и запускается отдельным шагом CI (`frontend-check`).
 
 ## Известные ограничения
 
@@ -220,7 +248,7 @@ powershell -ExecutionPolicy Bypass -File tests/smoke/webapi-smoke.ps1 -BaseUrl h
 | 5. Веб-клиент с картой | закрыт | Статический фронт `web/` (Leaflet + Chart.js, раздаётся WebAPI), координаты устьев из WITSML (ED50→WGS84 EPSG:1613) в `well_locations`, `GET /api/Wells` с `well_id`/`latitude`/`longitude`, `GET /api/Analytics/monthly?wellId`. При открытии страницы автоматически выбирается первая добывающая скважина (попап и панель с графиком открыты сразу); попап показывает суммарные нефть и воду, обводнённость последнего месяца с добычей, пик добычи, период работы и долю в добыче месторождения. |
 | 6. Отчёты | закрыт | `GET /api/Reports/monthly.xlsx` (листы «Сводка», «Помесячно», «По скважинам», ClosedXML, жирная шапка, автоширина, формат `#,##0.00`) и `monthly.csv` (BOM, запятая). `ReportService` с юнит-тестами структуры xlsx (число листов, колонки, контрольная сумма). Дополнительно — `GET /api/Reports/wells/{wellId}.xlsx` (листы «Скважина», «Помесячно») и ссылка «Скачать отчёт (Excel)» в попапе скважины. Контроль: суммарная нефть ≈ 10 037 080.61. |
 | 7. WITSML-данные | закрыт | Инжест геометрии скважин через ту же шину: Ingestion парсит текстовые выгрузки `WellWellbore/**/*_ACTUAL` (траектории, ED50/UTM31N) и публикует `well.trajectory`; Consumer пишет замеры в `well_trajectories` (PK `well_id+md`, reject дубликатов) и забой (Bottom Hole MD/TVD) в `well_trajectory_meta`. `GET /api/Wells/{wellId}/trajectory` отдаёт замеры в WGS84 (EPSG:1613, общий хелпер `CoordinateTransform`); `GET /api/wells` дополнен `tdMd`/`tdTvd`; на карте слой линий траекторий и попап «Забой / Длина ствола». Перфораций в выгрузках нет — событие/таблица/эндпоинт перфораций не создаются. |
-| 8. Деплой на VPS | план | Развёртывание стека на удалённом сервере. |
+| 8. Деплой на VPS | закрыт | CI/CD через GitHub Actions (`.github/workflows/ci.yml` — build + test, `deploy.yml` — образы в `ghcr.io`), `docker-compose.prod.yml` (postgres/kafka/clickhouse/consumer/chingest/aggregator/webapi/caddy + одноразовый ingestion), Caddy c авто-HTTPS, `DEPLOY.md` (ufw, SSH по ключу, бэкап pg_dump), страница «О проекте», оформление карты (тёмно-серые траектории, чёрные устья/забои) и графиков (нефть — коричневая, вода — голубая), иконка вкладки `web/favicon.ico`, контакты разработчика на странице «О проекте» (блок под шапкой и краткая строка в подвале). |
 
 ## Лицензия данных
 

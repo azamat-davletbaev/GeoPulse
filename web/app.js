@@ -185,8 +185,8 @@ function showChart(well, monthly) {
         {
           label: 'Нефть, м³',
           data: oil,
-          borderColor: '#2f6fed',
-          backgroundColor: 'rgba(47, 111, 237, 0.10)',
+          borderColor: '#8b4513',
+          backgroundColor: 'rgba(139, 69, 19, 0.10)',
           fill: true,
           tension: 0.25,
           pointRadius: 0
@@ -194,8 +194,8 @@ function showChart(well, monthly) {
         {
           label: 'Вода, м³',
           data: water,
-          borderColor: '#16a085',
-          backgroundColor: 'rgba(22, 160, 133, 0.10)',
+          borderColor: '#3b82c4',
+          backgroundColor: 'rgba(59, 130, 196, 0.10)',
           fill: true,
           tension: 0.25,
           pointRadius: 0
@@ -234,12 +234,18 @@ function showPanelError(well, error) {
 // Открывает попап маркера и панель с графиком. Если помесячные данные уже загружены
 // (автовыбор при старте), они передаются аргументом — повторного запроса не будет.
 async function selectWell(well, marker, monthly) {
-  marker.setPopupContent(popupHtml(well, null));
-  marker.openPopup();
+  // Маркер мог не создаться (битые координаты) — панель всё равно открывается:
+  // график и попап не зависят от того, нарисовано ли устье на карте.
+  if (marker) {
+    marker.setPopupContent(popupHtml(well, null));
+    marker.openPopup();
+  }
 
   try {
     const data = monthly ?? (await fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`));
-    marker.setPopupContent(popupHtml(well, data));
+    if (marker) {
+      marker.setPopupContent(popupHtml(well, data));
+    }
     showChart(well, data);
   } catch (error) {
     showPanelError(well, error);
@@ -297,35 +303,171 @@ async function autoSelectWell(located, markers) {
   await selectWell(found.well, markers.get(found.well.wellId), found.monthly);
 }
 
-// Первичный вид карты задаётся фиксированным зумом, а не fitBounds:
-// все 7 скважин Volve стоят в прямоугольнике ~9 × 7 м (замер по /api/wells),
-// поэтому fitBounds вырождался в «случайный» максимальный зум.
-// На широте ~58.44° зум 16 даёт ~1.25 м/пиксель: кластер занимает ~7 × 6 px,
-// то есть весь набор устьев гарантированно в кадре на любом экране, а расстояние
-// между маркерами вдвое больше, чем на зуме 15, — их проще различить и выбрать.
-const INITIAL_ZOOM = 16;
+// Первичный вид карты строится fitBounds по границам всех валидных точек — устьев
+// и траекторий, — а не по среднему центру: траектории Volve уходят на километры от
+// устьев, и фиксированный зум показывал только кластер устьев ~9 × 7 м, то есть
+// валидные линии оказывались за кадром.
+// MAX_INITIAL_ZOOM ограничивает fitBounds сверху: без ограничителя вырожденные
+// границы (все точки в одном месте) уводят карту на максимальный зум тайлов.
+// На широте ~58.44° зум 16 — это ~1.25 м/пиксель: ровно тот вид кластера устьев,
+// что был раньше, когда траекторий в базе не было.
+const MAX_INITIAL_ZOOM = 16;
+const VIEW_PADDING = [28, 28];
+const FALLBACK_CENTER = [0, 0];
+const FALLBACK_ZOOM = 2;
 
-// Центр первичного вида — среднее арифметическое координат скважин из /api/wells.
-function averageCenter(wells) {
-  const lat = wells.reduce((sum, well) => sum + well.latitude, 0) / wells.length;
-  const lon = wells.reduce((sum, well) => sum + well.longitude, 0) / wells.length;
+// Приведение координаты к числу. Number(null) и Number('') дают 0, поэтому «пустые»
+// значения отсекаются ДО приведения: иначе отсутствующая координата превратилась бы
+// в точку (0, 0) — Null Island — и слой выглядел бы валидным.
+function toFiniteNumber(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'string' && value.trim() === '') {
+    return null;
+  }
+
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+// Единственная точка проверки координат. L.latLng(NaN, …) бросает
+// "Invalid LatLng object" и уносит с собой весь слой (и весь цикл маркеров),
+// поэтому в Leaflet попадают только конечные числа в диапазонах WGS84.
+// null — координата непригодна, точку/скважину не рисуем.
+function safeLatLng(latitude, longitude) {
+  const lat = toFiniteNumber(latitude);
+  const lon = toFiniteNumber(longitude);
+
+  if (lat === null || lon === null) {
+    return null;
+  }
+
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return null;
+  }
+
   return [lat, lon];
 }
 
-// Слой линий траекторий: замеры приходят из /api/Wells/{wellId}/trajectory уже в WGS84.
-async function loadTrajectory(well) {
+// Первичный вид по накопленным границам. Пустые границы (ни одной валидной точки) —
+// нейтральный вид, карта остаётся рабочей. Ошибка fitBounds тоже не критична.
+function applyInitialView(viewBounds) {
+  if (!viewBounds.isValid()) {
+    map.setView(FALLBACK_CENTER, FALLBACK_ZOOM);
+    return;
+  }
+
   try {
-    const points = await fetchJson(`/api/Wells/${well.wellId}/trajectory`);
-    if (!Array.isArray(points) || points.length === 0) {
+    map.fitBounds(viewBounds, { padding: VIEW_PADDING, maxZoom: MAX_INITIAL_ZOOM });
+  } catch (error) {
+    console.warn('Первичный вид по границам не применён', error);
+    map.setView(viewBounds.getCenter(), MAX_INITIAL_ZOOM);
+  }
+}
+
+// Замеры приходят из /api/Wells/{wellId}/trajectory уже в WGS84.
+// Возвращает только валидные точки { md, latlng }, отсортированные по MD:
+// контракт порядок гарантирует, но линию и забой строим независимо от порядка ответа.
+async function fetchTrajectoryPoints(well) {
+  const points = await fetchJson(`/api/Wells/${well.wellId}/trajectory`);
+  if (!Array.isArray(points)) {
+    return [];
+  }
+
+  const valid = [];
+  for (const point of points) {
+    const latlng = safeLatLng(point.latitude, point.longitude);
+    if (latlng === null) {
+      continue;
+    }
+
+    valid.push({ md: Number(point.md) || 0, latlng });
+  }
+
+  return valid.sort((a, b) => a.md - b.md);
+}
+
+// Слой одной скважины: тёмно-серая линия траектории и незалитый чёрный кружок забоя
+// (последняя точка по MD). Линия строится только при двух и более точках: одна точка —
+// это не геометрия, для неё достаточно маркера забоя. null — рисовать нечего.
+function buildTrajectoryLayer(points) {
+  if (points.length === 0) {
+    return null;
+  }
+
+  const layer = L.layerGroup();
+
+  // Траектория — тёмно-серая линия, без яркой заливки: не должна перекрикивать маркеры.
+  if (points.length >= 2) {
+    L.polyline(
+      points.map((point) => point.latlng),
+      { color: '#4a4a4a', weight: 2, opacity: 0.9 }
+    ).addTo(layer);
+  }
+
+  // Забой — незалитый чёрный кружок в последней точке траектории (по MD).
+  L.circleMarker(points[points.length - 1].latlng, {
+    radius: 4,
+    color: '#000000',
+    weight: 2,
+    opacity: 1,
+    fill: false,
+    interactive: false
+  }).addTo(layer);
+
+  return layer;
+}
+
+// Guard на одну скважину: запрос, разбор ответа, построение слоя и его добавление
+// завёрнуты в один try/catch. Падение одной скважины логируется и не мешает
+// остальным траекториям, маркерам устьев и самой карте.
+async function addTrajectoryLayer(well, viewBounds) {
+  try {
+    const points = await fetchTrajectoryPoints(well);
+    const layer = buildTrajectoryLayer(points);
+    if (layer === null) {
+      return;
+    }
+
+    // Границы первичного вида учитывают и траекторию — иначе линии уходят за кадр.
+    for (const point of points) {
+      viewBounds.extend(point.latlng);
+    }
+
+    layer.addTo(map);
+  } catch (error) {
+    console.warn(`Траектория ${wellCaption(well)} не добавлена`, error);
+  }
+}
+
+// Устье — залитый чёрный кружок с тонкой белой обводкой (вместо стандартного пина Leaflet).
+// Guard тоже по одной скважине: битая координата или ошибка Leaflet не ломают остальные
+// маркеры и не обрывают инициализацию карты.
+function addWellheadMarker(well, viewBounds) {
+  try {
+    const latlng = safeLatLng(well.latitude, well.longitude);
+    if (latlng === null) {
+      console.warn(`Устье ${wellCaption(well)} пропущено: некорректные координаты`, well.latitude, well.longitude);
       return null;
     }
 
-    return L.polyline(
-      points.map((point) => [point.latitude, point.longitude]),
-      { color: '#2f6fed', weight: 2, opacity: 0.8 }
-    );
+    const marker = L.circleMarker(latlng, {
+      radius: 5,
+      color: '#ffffff',
+      weight: 1.5,
+      fillColor: '#000000',
+      fillOpacity: 1
+    });
+    marker.bindPopup(popupHtml(well, null));
+    marker.on('click', () => onMarkerClick(well, marker));
+    marker.addTo(map);
+    viewBounds.extend(latlng);
+
+    return marker;
   } catch (error) {
-    console.warn(`Траектория ${wellCaption(well)} не загружена`, error);
+    console.warn('Устье не добавлено', well, error);
     return null;
   }
 }
@@ -333,43 +475,67 @@ async function loadTrajectory(well) {
 async function init() {
   map = L.map('map');
 
+  // Вид выставляется сразу после создания карты: карта «loaded» ещё до загрузки данных,
+  // поэтому даже полный отказ API оставляет рабочие тайлы и панорамирование.
+  map.setView(FALLBACK_CENTER, FALLBACK_ZOOM);
+
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map);
 
-  const wells = await fetchJson('/api/wells');
-  const located = wells.filter((w) => w.latitude !== null && w.longitude !== null);
+  // Границы первичного вида накапливаются по устьям и траекториям по мере добавления слоёв.
+  const viewBounds = L.latLngBounds([]);
   const markers = new Map();
+  const located = [];
 
-  for (const well of located) {
-    const marker = L.marker([well.latitude, well.longitude]);
-    marker.bindPopup(popupHtml(well, null));
-    marker.on('click', () => onMarkerClick(well, marker));
-    marker.addTo(map);
-    markers.set(well.wellId, marker);
+  let wells = [];
+  try {
+    wells = await fetchJson('/api/wells');
+  } catch (error) {
+    // Пустой список — карта остаётся на нейтральном виде, без маркеров и траекторий.
+    console.error('Список скважин не загружен', error);
   }
 
-  // Слой траекторий: линии замеров (WGS84) поверх маркеров устьев.
-  await Promise.all(located.map(async (well) => {
-    const line = await loadTrajectory(well);
-    if (line !== null) {
-      line.addTo(map);
+  const list = Array.isArray(wells) ? wells : [];
+
+  // Сначала траектории (линии + забои), затем устья поверх них.
+  // allSettled: даже неожиданное исключение внутри одной скважины не отменяет остальные.
+  const settled = await Promise.allSettled(list.map((well) => addTrajectoryLayer(well, viewBounds)));
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.warn('Слой траектории пропущен', result.reason);
     }
-  }));
-
-  if (located.length > 0) {
-    // Фиксированный первичный вид: центр — средние координаты скважин, зум — константа.
-    map.setView(averageCenter(located), INITIAL_ZOOM);
-  } else {
-    map.setView([0, 0], 2);
   }
 
-  await autoSelectWell(located, markers);
+  for (const well of list) {
+    const marker = addWellheadMarker(well, viewBounds);
+    if (marker !== null) {
+      markers.set(well.wellId, marker);
+      located.push(well);
+    }
+  }
+
+  applyInitialView(viewBounds);
+
+  // Автовыбор скважины на карту не влияет: ошибки сети и панели/графика гасятся внутри,
+  // но и здесь оставляем guard, чтобы сбой панели не считался сбоем инициализации карты.
+  try {
+    await autoSelectWell(located, markers);
+  } catch (error) {
+    console.warn('Автовыбор скважины не выполнен', error);
+  }
 }
 
-document.getElementById('panel-close').addEventListener('click', closePanel);
+// Кнопка закрытия панели: без неё страница работает, поэтому отсутствие элемента
+// в разметке не должно валить скрипт до инициализации карты.
+const panelClose = document.getElementById('panel-close');
+if (panelClose !== null) {
+  panelClose.addEventListener('click', closePanel);
+}
 
+// Последний рубеж: init уже изолирует каждый слой и каждую скважину, но если упадёт
+// что-то за пределами guard'ов, карта останется с нейтральным видом и рабочими тайлами.
 init().catch((error) => {
-  console.error(error);
+  console.error('Инициализация карты не завершена', error);
 });

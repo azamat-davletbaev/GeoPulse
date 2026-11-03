@@ -33,11 +33,11 @@ var app = builder.Build();
 // Необработанные исключения отдаются клиенту как application/problem+json (RFC 7807).
 app.UseExceptionHandler();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// Swagger доступен во всех окружениях: это демо-стенд, а контракт смок-теста
+// (tests/smoke/webapi-smoke.ps1) проверяет GET /swagger/v1/swagger.json на 200,
+// в том числе при развёртывании на сервере (ASPNETCORE_ENVIRONMENT=Production).
+app.UseSwagger();
+app.UseSwaggerUI();
 
 // Статический фронт (папка web/) — раздаётся самим WebAPI.
 // Локально путь разрешается относительно корня содержимого (корень репозитория),

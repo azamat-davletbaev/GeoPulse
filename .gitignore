@@ -7,8 +7,16 @@ obj/
 # VS Code
 .vscode/
 
-# Данные Volve (большие файлы + лицензия Equinor)
-data/
+# Данные Volve: по умолчанию не храним в репозитории (большие файлы + лицензия Equinor).
+# Исключение — минимальный набор, нужный для образа Ingestion (production xlsx + траектории WITSML):
+data/*
+!data/Volve_Production_data/
+!data/Volve_Well_technical_data/
+data/Volve_Well_technical_data/*
+!data/Volve_Well_technical_data/WellWellbore/
+
+# Локальные секреты деплоя
+.env
 
 # Логи и временные файлы
 *.log

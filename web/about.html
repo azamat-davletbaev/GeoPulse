@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoPulse — о проекте</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/about.css">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+</head>
+<body>
+  <header class="topbar">
+    <h1>GeoPulse</h1>
+    <nav class="topnav">
+      <a href="/">Карта</a>
+      <a href="/reports.html">Отчёты</a>
+      <a href="/about.html" class="active">О проекте</a>
+    </nav>
+    <span class="subtitle">Месторождение Volve — о проекте</span>
+  </header>
+
+  <main class="about">
+    <!-- Разработчик — первым блоком сразу под шапкой: контакты видны до описания проекта. -->
+    <section class="about-contact" aria-labelledby="developer-title">
+      <h2 id="developer-title">Разработчик</h2>
+      <p>Азамат Давлетбаев</p>
+      <p>тел.: <a href="tel:+79273059459">+79273059459</a></p>
+      <p>tg: <a href="https://t.me/Azanat_dav">@Azanat_dav</a></p>
+      <p>Исходный код: <a href="https://github.com/azamat-davletbaev/GeoPulse">github.com/azamat-davletbaev/GeoPulse</a></p>
+    </section>
+
+    <section class="card">
+      <h2>Что это</h2>
+      <p>
+        GeoPulse — демонстрационная веб-система мониторинга добычи нефти. На карте показаны
+        семь скважин месторождения <strong>Volve</strong> (норвежский шельф, Северное море):
+        устья, траектории стволов и забои. По каждой скважине строится помесячный график
+        добычи нефти и воды; доступны сводные отчёты в Excel и CSV.
+      </p>
+      <p>
+        Система построена как событийный пайплайн: данные импортируются через Apache Kafka,
+        хранятся в PostgreSQL и ClickHouse, а фронтенд получает готовые агрегаты через REST API.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>Откуда данные</h2>
+      <p>
+        Используется открытый набор данных Volve, опубликованный компанией Equinor
+        (совместно с партнёрами по лицензии) под открытой лицензией
+        <em>Equinor Open Data Licence</em> (CC BY-NC-SA 4.0). Источник:
+        <a href="https://www.equinor.com/energy/volve-data-sharing">equinor.com/energy/volve-data-sharing</a>.
+      </p>
+      <p>
+        Из набора берутся две части: архив <strong>Production data</strong> (суточная добыча
+        по скважинам) и текстовые выгрузки траекторий из <strong>WellWellbore</strong>
+        (координаты и инклинометрия стволов). Данные используются без изменения;
+        конвертация координат из ED50/UTM31N в WGS84 выполняется в приложении.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>Архитектура</h2>
+      <pre class="diagram">Excel + WITSML (данные Volve)
+        │
+        ▼
+Ingestion.Service ──► Kafka ──┬─► Consumer ──► PostgreSQL (точечные данные)
+      парсер/издатель          │                 wells, daily_production,
+                               │                 well_trajectories
+                               ├─► CHIngest ──► ClickHouse gp (сырые события)
+                               └─► DLQ (некорректные события)
+
+ClickHouse gp.production_daily ──► Aggregator (таймер 60 с) ──► gp.monthly_production
+                                                                        │
+                                                                        ▼
+                                              GeoPulse.WebAPI (REST + статика web/)
+                                                                        │
+                                                                        ▼
+                                                          Фронт web/ (Leaflet + Chart.js)</pre>
+    </section>
+
+    <section class="card">
+      <h2>Стек</h2>
+      <ul class="stack">
+        <li>ASP.NET Core (.NET 10) — REST API и раздача статического фронта;</li>
+        <li>EF Core — доступ к PostgreSQL и миграции;</li>
+        <li>PostgreSQL — точечные данные (скважины, суточная добыча, траектории);</li>
+        <li>ClickHouse — сырые события и помесячные агрегаты аналитики;</li>
+        <li>Apache Kafka — событийная шина между импортом и потребителями;</li>
+        <li>ClosedXML — генерация отчётов Excel;</li>
+        <li>Leaflet и Chart.js — карта и графики (локальные vendor-файлы, без CDN).</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Как разрабатывался</h2>
+      <p>
+        Проект собран по этапной схеме с участием AI-агента в роли разработчика. Человек
+        выступал архитектором и ревьюером: формулировал требования и контракты, принимал
+        результат каждого этапа, а агент писал и правил код, тесты и документацию.
+      </p>
+      <p>
+        Рабочий цикл: фиксировались канонические имена и схемы, тесты служили контрактом
+        (контрактные и интеграционные тесты писались вместе с функциональностью), каждый этап
+        закрывался контрольными числами и проходил приёмку. Решения и ограничения
+        документировались в README. Такой подход позволяет воспроизводимо двигаться
+        небольшими приёмками без переписывания уже проверенного кода.
+      </p>
+    </section>
+  </main>
+
+  <!-- Краткий дубль контактов разработчика — в подвале страницы, одной строкой. -->
+  <footer class="about-footer">
+    <p>
+      Азамат Давлетбаев ·
+      <a href="tel:+79273059459">+79273059459</a> ·
+      <a href="https://t.me/Azanat_dav">@Azanat_dav</a> ·
+      <a href="https://github.com/azamat-davletbaev/GeoPulse">github.com/azamat-davletbaev/GeoPulse</a>
+    </p>
+  </footer>
+</body>
+</html>

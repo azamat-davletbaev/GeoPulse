@@ -115,4 +115,37 @@ public sealed class TrajectoryContractTests
             await app.DisposeAsync();
         }
     }
+
+    [Fact]
+    public async Task GetTrajectory_ReturnsPointsSortedByMdAscending()
+    {
+        var wells = new[] { new Well { Id = 1, NpdWellBoreCode = 5351, Name = "Well 1", Field = "Volve", Type = "OP" } };
+        // Точки переданы в произвольном порядке; контракт — строгое возрастание MD.
+        var trajectories = new[]
+        {
+            new WellTrajectory { Md = 300.0, Tvd = 280.0, Inclination = 45.0, Azimuth = 90.0, Easting = 435000.0, Northing = 6478000.0 },
+            new WellTrajectory { Md = 100.0, Tvd = 100.0, Inclination = 0.0, Azimuth = 0.0, Easting = 435100.0, Northing = 6478100.0 },
+            new WellTrajectory { Md = 200.0, Tvd = 190.0, Inclination = 30.0, Azimuth = 60.0, Easting = 435050.0, Northing = 6478050.0 }
+        };
+
+        var (app, client) = await StartAsync(wells, trajectories: trajectories);
+
+        try
+        {
+            var response = await client.GetAsync("/api/Wells/1/trajectory");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var mds = doc.RootElement.EnumerateArray()
+                .Select(point => point.GetProperty("md").GetDouble())
+                .ToArray();
+
+            Assert.Equal(new[] { 100.0, 200.0, 300.0 }, mds);
+        }
+        finally
+        {
+            await app.DisposeAsync();
+        }
+    }
 }

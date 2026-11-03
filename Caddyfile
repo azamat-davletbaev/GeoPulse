@@ -1,0 +1,23 @@
+# Caddyfile для GeoPulse.
+# {$DOMAIN} подставляется из переменной окружения DOMAIN (задаётся в .env).
+# Caddy автоматически выпускает сертификат Let's Encrypt (HTTP-01/TLS-ALPN-01);
+# порты 80 и 443 должны быть открыты наружу (см. DEPLOY.md).
+#
+# Статический фронт и REST API раздаёт сам WebAPI (UseStaticFiles), поэтому Caddy
+# просто проксирует весь трафик на webapi:5146 — поведение не меняется.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy webapi:5146
+}
+
+# Резервный вход по «голому» IP: используется, если DNS/DuckDNS или сертификат
+# временно недоступны. Явная схема http:// обязательна — Caddy не пытается
+# выпускать сертификат на IP-адрес (Let's Encrypt такие не выдаёт) и просто
+# проксирует трафик на тот же webapi. Порт 80 должен быть открыт в UFW.
+http://45.12.4.88 {
+	encode zstd gzip
+
+	reverse_proxy webapi:5146
+}

@@ -1,0 +1,186 @@
+# Прод-стек GeoPulse.
+# Постоянный состав (docker compose up -d): postgres, kafka, clickhouse,
+# consumer, chingest, aggregator, webapi, caddy.
+# Ingestion — одноразовый запуск (docker compose run --rm ingestion), в постоянный
+# состав не входит (профиль "init").
+#
+# Переменные окружения берутся из файла .env (см. .env.example). Секреты — в .env,
+# в репозиторий не коммитятся.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: geopulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geopulse_core}
+      POSTGRES_USER: ${POSTGRES_USER:-geopulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан в .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Скромный лимит: БД небольшая (15 тыс. строк добычи + справочники).
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-geopulse} -d ${POSTGRES_DB:-geopulse_core}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Порт наружу не публикуем — Postgres доступен только внутри compose-сети.
+
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: geopulse-kafka
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Топики создаются автоматически при первом обращении; 3 партиции — каноническое
+      # значение для production-daily (совпадает с README).
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Ограничение heap JVM (сервер 2 ГБ RAM).
+      KAFKA_HEAP_OPTS: "-Xmx384m"
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    # Порт наружу не публикуем.
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: geopulse-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-gp}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-geopulse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD не задан в .env}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - chdata:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    # Ограничение памяти ClickHouse (сервер 2 ГБ RAM).
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # Порт наружу не публикуем.
+
+  consumer:
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-consumer:${TAG:-latest}
+    container_name: geopulse-consumer
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-geopulse_core};Username=${POSTGRES_USER:-geopulse};Password=${POSTGRES_PASSWORD}
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__Topic: production-daily
+      Kafka__DlqTopic: production-daily-dlq
+    mem_limit: 256m
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  chingest:
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-chingest:${TAG:-latest}
+    container_name: geopulse-chingest
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-geopulse_core};Username=${POSTGRES_USER:-geopulse};Password=${POSTGRES_PASSWORD}
+      ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Database=${CLICKHOUSE_DB:-gp};Username=${CLICKHOUSE_USER:-geopulse};Password=${CLICKHOUSE_PASSWORD}
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__Topic: production-daily
+      Kafka__DlqTopic: production-daily-dlq
+    mem_limit: 256m
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  aggregator:
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-aggregator:${TAG:-latest}
+    container_name: geopulse-aggregator
+    restart: unless-stopped
+    environment:
+      ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Database=${CLICKHOUSE_DB:-gp};Username=${CLICKHOUSE_USER:-geopulse};Password=${CLICKHOUSE_PASSWORD}
+      RecalcIntervalSeconds: "60"
+    mem_limit: 256m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  webapi:
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-webapi:${TAG:-latest}
+    container_name: geopulse-webapi
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__GeoPulse: Host=postgres;Port=5432;Database=${POSTGRES_DB:-geopulse_core};Username=${POSTGRES_USER:-geopulse};Password=${POSTGRES_PASSWORD}
+      ConnectionStrings__ClickHouse: Host=clickhouse;Port=8123;Database=${CLICKHOUSE_DB:-gp};Username=${CLICKHOUSE_USER:-geopulse};Password=${CLICKHOUSE_PASSWORD}
+    mem_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    # Порт наружу не публикуем — наружу смотрит только Caddy (80/443).
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: geopulse-caddy
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN не задан в .env (DuckDNS-домен)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - webapi
+
+  # Одноразовый импорт данных: docker compose run --rm ingestion.
+  # В постоянный состав (docker compose up -d) не входит благодаря профилю "init".
+  ingestion:
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-ingestion:${TAG:-latest}
+    profiles: ["init"]
+    environment:
+      # Пути к данным (Volve:ProductionWorkbook / Volve:WellboreRoot) запечены в образ
+      # и берутся из appsettings.json; переопределяем только адрес Kafka.
+      Kafka__BootstrapServers: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  chdata:
+  caddy_data:
+  caddy_config:
+
