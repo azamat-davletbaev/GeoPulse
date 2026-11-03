@@ -9,7 +9,8 @@
     monthKey,
     PALETTE,
     lineSeries,
-    lineChartOption
+    lineChartOption,
+    whenFontsReady
   } = window.GeoPulse;
 
   // Ожидаемые пути ML-эндпоинта прогноза. Контракт будет финализирован при его
@@ -37,11 +38,17 @@
     splitLine: { show: false }
   };
 
-  const CHART_GRID = { left: 56, right: 60, top: 24, bottom: 52 };
+  // Верхний отступ — место под подписи осей: у правой оси «Газ, м³» имя рисуется
+  // над ней, и при маленьком top ECharts обрезает его по ширине.
+  const CHART_GRID = { left: 56, right: 60, top: 44, bottom: 52 };
 
   let chart;
   let wells = [];
   let currentScope = 'field';
+  // Номер актуальной загрузки: ответы устаревших запросов игнорируются.
+  let loadSeq = 0;
+  // Обработчики вешаются однократно, даже если init() перезапускают по «Повторить».
+  let controlsWired = false;
 
   function monthSeries(monthly) {
     return {
@@ -150,32 +157,45 @@
       );
     }
 
-    chart = echarts.init(document.getElementById('forecastChart'));
-    chart.setOption(lineChartOption(labels, series, {
-      grid: CHART_GRID,
-      yAxes: [OIL_WATER_AXIS, GAS_AXIS]
-    }));
+    return whenFontsReady().then(() => {
+      chart = echarts.init(document.getElementById('forecastChart'));
+      chart.setOption(lineChartOption(labels, series, {
+        grid: CHART_GRID,
+        yAxes: [OIL_WATER_AXIS, GAS_AXIS]
+      }));
 
-    const skeleton = document.getElementById('forecastChart-skeleton');
-    if (skeleton && skeleton.style) {
-      skeleton.style.display = 'none';
-    }
+      showChartSkeleton(false);
+    });
   }
+
   function setPlaceholder(visible) {
     document.getElementById('forecast-placeholder').hidden = !visible;
   }
 
+  // Скелетон виден только пока идёт запрос.
   function showChartSkeleton(visible) {
     const el = document.getElementById('forecastChart-skeleton');
-    if (el && el.style) {
-      el.style.display = visible ? '' : 'none';
+    if (el !== null) {
+      el.hidden = !visible;
     }
   }
 
+  // Ошибка загрузки факта: скелетон скрыт, показан текст и кнопка «Повторить».
   function showError(error) {
-    const el = document.getElementById('error');
-    el.textContent = 'Не удалось загрузить данные: ' + (error && error.message ? error.message : error);
-    el.hidden = false;
+    showChartSkeleton(false);
+    document.getElementById('error-text').textContent =
+      'Не удалось загрузить данные: ' + (error && error.message ? error.message : error);
+    const el = document.getElementById('forecast-error');
+    if (el !== null) {
+      el.hidden = false;
+    }
+  }
+
+  function hideError() {
+    const el = document.getElementById('forecast-error');
+    if (el !== null) {
+      el.hidden = true;
+    }
   }
 
   function setWellSelect(visible) {
@@ -191,9 +211,10 @@
   }
 
   async function load() {
-    document.getElementById('error').hidden = true;
-    showChartSkeleton(true);
+    const seq = ++loadSeq;
+    hideError();
     setPlaceholder(false);
+    showChartSkeleton(true);
 
     if (chart) {
       chart.dispose();
@@ -201,7 +222,16 @@
     }
 
     try {
-      const fact = await fetchFact();
+      const fact = monthSeries(await fetchFact());
+      // Ответ устарел (переключили область или нажали «Повторить») — не рисуем его.
+      if (seq !== loadSeq) {
+        return;
+      }
+
+      if (fact.labels.length === 0) {
+        showError(new Error('API не вернуло данных о добыче'));
+        return;
+      }
 
       let forecast = null;
       try {
@@ -212,10 +242,16 @@
         forecast = null;
       }
 
-      renderChart(fact, forecast);
+      if (seq !== loadSeq) {
+        return;
+      }
+
+      await renderChart(fact, forecast);
       setPlaceholder(forecast === null);
     } catch (error) {
-      showChartSkeleton(false);
+      if (seq !== loadSeq) {
+        return;
+      }
       showError(error);
     }
   }
@@ -227,30 +263,58 @@
       .join('');
   }
 
+  // Обработчики вешаем один раз: init() может вызываться повторно по «Повторить».
+  function wireControls() {
+    if (controlsWired) {
+      return;
+    }
+    controlsWired = true;
+
+    document.getElementById('scope-field').addEventListener('click', () => setScope('field'));
+    document.getElementById('scope-well').addEventListener('click', () => setScope('well'));
+    document.getElementById('well-select').addEventListener('change', load);
+    document.getElementById('retry').addEventListener('click', load);
+    document.getElementById('error-retry').addEventListener('click', retry);
+  }
+
+  // Повтор после ошибки: если список скважин так и не пришёл — начинаем страницу заново.
+  async function retry() {
+    hideError();
+    if (wells.length === 0) {
+      await init();
+      return;
+    }
+    await load();
+  }
+
   async function init() {
+    hideError();
+
     try {
-      wells = await fetchJson('/api/wells');
-      wells = Array.isArray(wells) ? wells : [];
+      const data = await fetchJson('/api/wells');
+      wells = Array.isArray(data) ? data : [];
     } catch (error) {
       wells = [];
       console.error('Список скважин не загружен', error);
     }
 
     if (wells.length === 0) {
-      showChartSkeleton(false);
       showError(new Error('Список скважин пуст'));
       return;
     }
 
     populateWells();
-
-    document.getElementById('scope-field').addEventListener('click', () => setScope('field'));
-    document.getElementById('scope-well').addEventListener('click', () => setScope('well'));
-    document.getElementById('well-select').addEventListener('change', load);
-    document.getElementById('retry').addEventListener('click', load);
+    wireControls();
 
     await load();
   }
+
+  // График не пересчитывает размер сам — держим его равным ширине контейнера.
+  window.addEventListener('resize', () => {
+    if (chart) {
+      chart.resize();
+    }
+  });
 
   init();
 })();

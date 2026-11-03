@@ -4,9 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GeoPulse — отчёты по месторождению Volve</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/reports.css">
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
@@ -37,7 +34,8 @@
 
     <section class="card">
       <h3>Сводка</h3>
-      <div id="summary-skeleton" class="skeleton-block">
+      <!-- Скелетон виден только во время запроса; после ответа скрывается (hidden). -->
+      <div id="summary-skeleton" class="skeleton-block" aria-hidden="true">
         <div class="skeleton"></div>
         <div class="skeleton"></div>
         <div class="skeleton"></div>
@@ -54,14 +52,17 @@
       <h3>Добыча по месяцам (по месторождению)</h3>
       <div class="chart-wrap">
         <div id="monthlyChart" class="chart-host"></div>
-        <div id="monthlyChart-skeleton" class="skeleton"></div>
+        <div id="monthlyChart-skeleton" class="skeleton" aria-hidden="true"></div>
       </div>
     </section>
 
-    <p id="error" class="error" hidden></p>
+    <div id="error" class="error error-block" role="alert" hidden>
+      <p id="error-text"></p>
+      <button type="button" id="retry" class="button button-secondary">Повторить</button>
+    </div>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="/vendor/echarts.min.js"></script>
   <script src="/common.js"></script>
   <script src="/reports.js"></script>
   <script src="/nav.js"></script>

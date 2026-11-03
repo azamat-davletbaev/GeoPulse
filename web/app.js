@@ -10,7 +10,8 @@
     monthKey,
     PALETTE,
     lineSeries,
-    lineChartOption
+    lineChartOption,
+    whenFontsReady
   } = window.GeoPulse;
 
   // ---------- Именованные константы (магические числа вынесены сюда) ----------
@@ -24,13 +25,13 @@
   const TRAJECTORY_CASCADE_DELAY_MS = 150;
   const INTRO_SESSION_KEY = 'geopulse.introSeen';
 
-  // Тайлы CartoDB dark_matter (OSM + CARTO, без ключа).
-  const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-  const TILE_SUBDOMAINS = 'abcd';
-  const TILE_MAX_ZOOM = 19;
+  // Тайлы Esri World Dark Gray Base (Canvas-сервис ArcGIS, без API-ключа).
+  // Подложка тёмная и нейтральная — как прежняя CARTO dark_matter, но без ключа.
+  const TILE_URL = 'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+  const TILE_MAX_ZOOM = 16;
   const TILE_ATTRIBUTION =
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
-    '&copy; <a href="https://carto.com/attributions">CARTO</a>';
+    'Tiles &copy; <a href="https://www.esri.com/">Esri</a> — Source: Esri, HERE, Garmin, ' +
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
   // Стиль траекторий: мягкое свечение парой слоёв (широкий полупрозрачный + тонкий).
   const TRAJECTORY_COLOR = PALETTE.oil;
@@ -182,34 +183,55 @@
     highlightMarker(null);
   }
 
+  function showPanelSkeleton(visible) {
+    const el = document.getElementById('chart-skeleton');
+    if (el !== null) {
+      el.hidden = !visible;
+    }
+  }
+
+  // Освобождаем график перед новой отрисовкой: второй init на том же DOM ECharts
+  // считает ошибкой и пишет предупреждение в консоль.
+  function disposeChart() {
+    if (chart) {
+      chart.dispose();
+      chart = null;
+    }
+  }
+
+  // Состояние «добыча грузится»: старый график убираем, показываем скелетон.
+  function preparePanelLoading(well) {
+    document.getElementById('panel-title').textContent = wellCaption(well);
+    document.getElementById('panel-error').hidden = true;
+    openPanel();
+    disposeChart();
+    showPanelSkeleton(true);
+  }
+
   function showChart(well, monthly) {
     document.getElementById('panel-title').textContent = `${wellCaption(well)} — ${well.field}`;
     document.getElementById('panel-error').hidden = true;
     openPanel();
 
-    if (chart) {
-      chart.dispose();
-      chart = null;
-    }
+    disposeChart();
 
     const labels = monthly.map(monthLabel);
     const oil = monthly.map((m) => m.oilVolSum ?? 0);
     const water = monthly.map((m) => m.waterVolSum ?? 0);
 
-    chart = echarts.init(document.getElementById('chart'));
-    chart.setOption(lineChartOption(
-      labels,
-      [
-        lineSeries('Нефть, м³', oil, PALETTE.oil, { area: true }),
-        lineSeries('Вода, м³', water, PALETTE.water)
-      ],
-      { yName: 'м³' }
-    ));
+    return whenFontsReady().then(() => {
+      chart = echarts.init(document.getElementById('chart'));
+      chart.setOption(lineChartOption(
+        labels,
+        [
+          lineSeries('Нефть, м³', oil, PALETTE.oil, { area: true }),
+          lineSeries('Вода, м³', water, PALETTE.water)
+        ],
+        { yName: 'м³' }
+      ));
 
-    const skeleton = document.getElementById('chart-skeleton');
-    if (skeleton && skeleton.style) {
-      skeleton.style.display = 'none';
-    }
+      showPanelSkeleton(false);
+    });
   }
 
   function showPanelError(well, error) {
@@ -217,6 +239,7 @@
     document.getElementById('panel-error').textContent =
       'Не удалось загрузить добычу: ' + (error && error.message ? error.message : error);
     document.getElementById('panel-error').hidden = false;
+    showPanelSkeleton(false);
     openPanel();
   }
 
@@ -227,12 +250,20 @@
       marker.openPopup();
     }
 
+    // Данных ещё нет — показываем скелетон ровно на время запроса.
+    const hasData = Array.isArray(monthly);
+    if (!hasData) {
+      preparePanelLoading(well);
+    }
+
     try {
-      const data = monthly ?? (await fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`));
+      const data = hasData
+        ? monthly
+        : await fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`);
       if (marker) {
         marker.setPopupContent(popupHtml(well, data));
       }
-      showChart(well, data);
+      await showChart(well, data);
     } catch (error) {
       showPanelError(well, error);
     }
@@ -480,6 +511,7 @@
     document.getElementById('panel-error').textContent =
       'Не удалось загрузить скважины: ' + (error && error.message ? error.message : error);
     document.getElementById('panel-error').hidden = false;
+    showPanelSkeleton(false);
     openPanel();
   }
 
@@ -495,7 +527,6 @@
 
     L.tileLayer(TILE_URL, {
       maxZoom: TILE_MAX_ZOOM,
-      subdomains: TILE_SUBDOMAINS,
       attribution: TILE_ATTRIBUTION
     }).addTo(map);
 
@@ -556,6 +587,13 @@
   if (panelClose !== null) {
     panelClose.addEventListener('click', closePanel);
   }
+
+  // График в панели не пересчитывает размер сам — держим его равным контейнеру.
+  window.addEventListener('resize', () => {
+    if (chart) {
+      chart.resize();
+    }
+  });
 
   init().catch((error) => {
     console.error('Инициализация карты не завершена', error);

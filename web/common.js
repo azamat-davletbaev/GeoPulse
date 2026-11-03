@@ -21,6 +21,20 @@
   // Шрифт для подписей ECharts: canvas не читает CSS-переменные, поэтому дублируем стек.
   const CHART_FONT = '"Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
+  // Предел подписей по оси X. Полное «YYYY-MM» шире 50 px и на узкой панели скважины
+  // (~370 px) слипается, поэтому подписываем годы и держим не больше 10 меток.
+  const X_AXIS_MAX_TICKS = 10;
+
+  // ECharts меряет подписи канвасом в момент рендера. Если Inter ещё не загрузился,
+  // метрики считаются по fallback-шрифту, и текст рисуется с обрезкой/смещением.
+  // Поэтому перед init/setOption ждём готовности шрифтов (локальные файлы грузятся быстро).
+  function whenFontsReady() {
+    if (typeof document !== 'undefined' && document.fonts && document.fonts.ready) {
+      return document.fonts.ready;
+    }
+    return Promise.resolve();
+  }
+
   async function fetchJson(path) {
     const response = await fetch(path, { headers: { Accept: 'application/json' } });
     if (!response.ok) {
@@ -114,11 +128,41 @@
     return series;
   }
 
+  // Подписи оси X для ECharts: деления по годам («2008», «2009», …).
+  // Метка ставится на первый месяц года из данных, число меток ограничено
+  // X_AXIS_MAX_TICKS (лишние годы прореживаются шагом). Полный «YYYY-MM»
+  // остаётся только в тултипе — механизм maxTicksLimit из Chart.js в ECharts не работает.
+  function xAxisTicks(labels) {
+    const firstIndexOfYear = new Map();
+    labels.forEach((label, index) => {
+      const year = String(label).slice(0, 4);
+      if (!firstIndexOfYear.has(year)) {
+        firstIndexOfYear.set(year, index);
+      }
+    });
+
+    const years = Array.from(firstIndexOfYear.keys());
+    const step = Math.max(1, Math.ceil(years.length / X_AXIS_MAX_TICKS));
+    const tickIndexes = new Set();
+    years.forEach((year, order) => {
+      if (order % step === 0) {
+        tickIndexes.add(firstIndexOfYear.get(year));
+      }
+    });
+
+    return {
+      // interval в ECharts — предикат по индексу метки: показываем только выбранные годы.
+      interval: (index) => tickIndexes.has(index),
+      formatter: (value) => String(value).slice(0, 4)
+    };
+  }
+
   // Базовый набор настроек графика добычи: тёмные тултипы, почти невидимая сетка
-  // (#232c3b), подписи месяцев с ограничением по числу делений (~12 на год).
+  // (#232c3b), подписи оси X — по годам (см. xAxisTicks), с защитой от наложения
+  // на узких графиках (hideOverlap скрывает лишние метки вместо слипания).
   function lineChartOption(labels, series, opts) {
     const o = opts || {};
-    const tickInterval = Math.max(1, Math.ceil(labels.length / 12));
+    const ticks = xAxisTicks(labels);
     return {
       backgroundColor: 'transparent',
       animationDuration: 400,
@@ -145,7 +189,12 @@
         boundaryGap: false,
         data: labels,
         axisLine: { lineStyle: { color: PALETTE.border } },
-        axisLabel: { color: PALETTE.muted, interval: tickInterval },
+        axisLabel: {
+          color: PALETTE.muted,
+          interval: ticks.interval,
+          formatter: ticks.formatter,
+          hideOverlap: true
+        },
         axisTick: { show: false },
         splitLine: { show: false }
       },
@@ -163,6 +212,7 @@
   window.GeoPulse = {
     PALETTE,
     CHART_FONT,
+    whenFontsReady,
     fetchJson,
     formatNumber,
     escapeHtml,
@@ -170,6 +220,7 @@
     hexToRgba,
     areaGradient,
     lineSeries,
+    xAxisTicks,
     lineChartOption
   };
 })();

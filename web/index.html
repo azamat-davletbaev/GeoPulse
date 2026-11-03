@@ -4,12 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GeoPulse — карта скважин Volve</title>
-  <!-- Стили и библиотеки — только CDN: Leaflet (карта), ECharts (графики),
-       Inter (шрифт через Google Fonts). Без сборщиков и локальных vendor-файлов. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <!-- Стили и библиотеки — только локальные vendor-файлы (web/vendor/): Leaflet (карта),
+       ECharts (графики), Inter (шрифт подключается в style.css). Внешних CDN нет:
+       единственные сетевые запросы страницы — тайлы карты Esri. -->
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/style.css">
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
 </head>
@@ -42,8 +40,8 @@
     <p id="panel-error" class="panel-error" hidden></p>
   </aside>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="/vendor/echarts.min.js"></script>
   <script src="/common.js"></script>
   <script src="/app.js"></script>
   <script src="/nav.js"></script>

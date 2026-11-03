@@ -4,9 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GeoPulse — о проекте</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/about.css">
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
@@ -83,7 +80,7 @@ ClickHouse gp.production_daily ──► Aggregator (таймер 60 с) ──�
                                               GeoPulse.WebAPI (REST + статика web/)
                                                                         │
                                                                         ▼
-                                                          Фронт web/ (Leaflet + Chart.js)</pre>
+                                                          Фронт web/ (Leaflet + ECharts)</pre>
     </section>
 
     <section class="card">
@@ -95,7 +92,7 @@ ClickHouse gp.production_daily ──► Aggregator (таймер 60 с) ──�
         <li>ClickHouse — сырые события и помесячные агрегаты аналитики;</li>
         <li>Apache Kafka — событийная шина между импортом и потребителями;</li>
         <li>ClosedXML — генерация отчётов Excel;</li>
-        <li>Leaflet и Chart.js — карта и графики (локальные vendor-файлы, без CDN).</li>
+        <li>Leaflet и ECharts — карта и графики (локальные vendor-файлы, без CDN).</li>
       </ul>
     </section>
 
