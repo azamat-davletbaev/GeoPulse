@@ -24,6 +24,17 @@ namespace GeoPulse.Infrastructure.Repositories
             Type = model.Type
         };
 
+        public static WellLocation ToWellLocation(WellEntity entity) => new()
+        {
+            WellId = entity.Id,
+            NpdWellBoreCode = entity.NpdWellBoreCode,
+            Name = entity.Name,
+            Field = entity.Field,
+            Type = entity.Type,
+            Latitude = entity.WellLocation?.Latitude,
+            Longitude = entity.WellLocation?.Longitude
+        };
+
         public static DailyProduction ToModel(DailyProductionEntity entity) => new()
         {
             Id = entity.Id,

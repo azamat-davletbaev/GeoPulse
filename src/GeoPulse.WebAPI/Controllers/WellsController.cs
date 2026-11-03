@@ -20,13 +20,13 @@ namespace GeoPulse.WebAPI.Controllers
             _production = production;
         }
 
-        /// <summary>Список скважин.</summary>
+        /// <summary>Список скважин с координатами устья (JOIN wells + well_locations).</summary>
         /// <param name="cancellationToken">Токен отмены.</param>
         [HttpGet]
         [ProducesResponseType(typeof(IReadOnlyList<WellDto>), StatusCodes.Status200OK)]
         public async Task<ActionResult<IReadOnlyList<WellDto>>> GetWells(CancellationToken cancellationToken)
         {
-            var wells = await _wells.GetAllAsync(cancellationToken);
+            var wells = await _wells.GetAllWithLocationsAsync(cancellationToken);
 
             return Ok(wells.Select(WellDto.FromModel).ToList());
         }

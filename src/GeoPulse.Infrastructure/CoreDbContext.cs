@@ -17,6 +17,9 @@ namespace GeoPulse.Infrastructure
         /// <summary>Суточная добыча.</summary>
         public DbSet<DailyProductionEntity> DailyProduction => Set<DailyProductionEntity>();
 
+        /// <summary>Координаты устьев скважин.</summary>
+        public DbSet<WellLocationEntity> WellLocations => Set<WellLocationEntity>();
+
         /// <summary>Помесячные агрегаты добычи (схема analytics).</summary>
         public DbSet<MonthlyProductionEntity> MonthlyProduction => Set<MonthlyProductionEntity>();
 
@@ -46,6 +49,20 @@ namespace GeoPulse.Infrastructure
                     .WithMany(well => well.DailyProduction)
                     .HasForeignKey(item => item.WellId)
                     .HasConstraintName("fk_daily_production_wells")
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<WellLocationEntity>(builder =>
+            {
+                builder.ToTable("well_locations");
+                builder.HasKey(location => location.WellId);
+                builder.Property(location => location.Latitude).IsRequired();
+                builder.Property(location => location.Longitude).IsRequired();
+                builder.Property(location => location.Source).HasColumnType("text").IsRequired();
+                builder.HasOne(location => location.Well)
+                    .WithOne(well => well.WellLocation)
+                    .HasForeignKey<WellLocationEntity>(location => location.WellId)
+                    .HasConstraintName("fk_well_locations_wells")
                     .OnDelete(DeleteBehavior.Cascade);
             });
 

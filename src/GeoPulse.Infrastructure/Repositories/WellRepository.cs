@@ -47,6 +47,18 @@ namespace GeoPulse.Infrastructure.Repositories
         }
 
         /// <inheritdoc />
+        public async Task<IReadOnlyList<WellLocation>> GetAllWithLocationsAsync(CancellationToken cancellationToken = default)
+        {
+            var entities = await _db.Wells
+                .AsNoTracking()
+                .Include(well => well.WellLocation)
+                .OrderBy(well => well.NpdWellBoreCode)
+                .ToListAsync(cancellationToken);
+
+            return entities.Select(Mapper.ToWellLocation).ToList();
+        }
+
+        /// <inheritdoc />
         public async Task AddRangeAsync(IEnumerable<Well> wells, CancellationToken cancellationToken = default)
         {
             var models = wells.ToList();

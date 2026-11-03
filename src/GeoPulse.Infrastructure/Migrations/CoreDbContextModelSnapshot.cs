@@ -179,6 +179,30 @@ namespace GeoPulse.Infrastructure.Migrations
                     b.ToTable("wells", (string)null);
                 });
 
+            modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellLocationEntity", b =>
+                {
+                    b.Property<int>("WellId")
+                        .HasColumnType("integer")
+                        .HasColumnName("well_id");
+
+                    b.Property<double>("Latitude")
+                        .HasColumnType("double precision")
+                        .HasColumnName("latitude");
+
+                    b.Property<double>("Longitude")
+                        .HasColumnType("double precision")
+                        .HasColumnName("longitude");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("source");
+
+                    b.HasKey("WellId");
+
+                    b.ToTable("well_locations", (string)null);
+                });
+
             modelBuilder.Entity("GeoPulse.Infrastructure.Entities.DailyProductionEntity", b =>
                 {
                     b.HasOne("GeoPulse.Infrastructure.Entities.WellEntity", "Well")
@@ -191,9 +215,23 @@ namespace GeoPulse.Infrastructure.Migrations
                     b.Navigation("Well");
                 });
 
+            modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellLocationEntity", b =>
+                {
+                    b.HasOne("GeoPulse.Infrastructure.Entities.WellEntity", "Well")
+                        .WithOne("WellLocation")
+                        .HasForeignKey("GeoPulse.Infrastructure.Entities.WellLocationEntity", "WellId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_well_locations_wells");
+
+                    b.Navigation("Well");
+                });
+
             modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellEntity", b =>
                 {
                     b.Navigation("DailyProduction");
+
+                    b.Navigation("WellLocation");
                 });
 #pragma warning restore 612, 618
         }

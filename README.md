@@ -36,11 +36,11 @@ ClickHouse gp.monthly_production ──▶ GeoPulse.WebAPI (/api/Analytics/*)
 | Проект | Назначение |
 | --- | --- |
 | `src/GeoPulse.Core` | Доменные модели (`Well`, `DailyProduction`) и модели событий (`Events/`). Зависимостей от инфраструктуры нет. |
-| `src/GeoPulse.Infrastructure` | EF Core: `CoreDbContext`, сущности, конфигурация, миграции, репозитории. Таблицы `wells`, `daily_production` в схеме `public` (уникальный индекс `well_id + date`). Схема `analytics` (`analytics.monthly_production`) заморожена: это снимок помесячных агрегатов для сверок, код её не читает и не пишет. |
+| `src/GeoPulse.Infrastructure` | EF Core: `CoreDbContext`, сущности, конфигурация, миграции, репозитории. Таблицы `wells`, `daily_production`, `well_locations` в схеме `public` (у `daily_production` уникальный индекс `well_id + date`, у `well_locations` — PK `well_id` и координаты устья WGS84). Схема `analytics` (`analytics.monthly_production`) заморожена: это снимок помесячных агрегатов для сверок, код её не читает и не пишет. |
 | `src/GeoPulse.Ingestion.Service` | Консольный парсер: Excel Volve → Kafka. В PostgreSQL не пишет. Публикует сначала события `well.registered` (по одному на скважину), затем `production.daily` на каждую строку добычи. Ключ сообщений — строка `npdWellBoreCode` (сохраняет порядок событий в пределах скважины). |
 | `src/GeoPulse.Consumer` | Консольный BackgroundService: слушает топик `production-daily` (группа `geopulse-consumer`), применяет EF-миграции на старте, пишет события в PostgreSQL идемпотентно (`INSERT ... ON CONFLICT DO NOTHING`). Некорректные события (битый JSON, неизвестный `eventType`, неподдерживаемая `schemaVersion`, неизвестная скважина) отправляет в топик `production-daily-dlq` с оригинальным телом и заголовком `reason`. |
 | `src/GeoPulse.CHIngest` | Консольный BackgroundService — второй читатель топика `production-daily` (группа `geopulse-chingest`). Пишет сырые события в ClickHouse (база `gp`, таблицы `wells` и `production_daily`, движок `ReplacingMergeTree`, чтение через `FINAL`): дубли топика дедуплицируются средствами движка, без дедупликации в памяти, запись — батчами по `Kafka:BatchSize`. Справочник `npdWellBoreCode → well_id` кэшируется на старте из PostgreSQL (`ConnectionStrings:CoreDb`). Некорректные события (битый JSON, неизвестный `eventType`, неподдерживаемая `schemaVersion`, неизвестная скважина) отправляет в `production-daily-dlq` с заголовком `reason`, как и Consumer (причины: у CHIngest неизвестная скважина — `unknown.well`, у Consumer — `well.not.found`). |
-| `src/GeoPulse.WebAPI` | REST API + Swagger, порт `5146`. Точечные данные из PostgreSQL: список скважин, карточка скважины, суточная добыча с фильтром по датам, сортировкой и пагинацией, health-проверка. Аналитика — из ClickHouse через `ClickHouseAnalyticsService`: помесячные агрегаты одной скважины и суммарная добыча по всем скважинам одним SQL-запросом к `gp.monthly_production`. |
+| `src/GeoPulse.WebAPI` | REST API + Swagger, порт `5146`. Точечные данные из PostgreSQL: список скважин, карточка скважины, суточная добыча с фильтром по датам, сортировкой и пагинацией, health-проверка. Аналитика — из ClickHouse через `ClickHouseAnalyticsService`: помесячные агрегаты одной скважины и суммарная добыча по всем скважинам одним SQL-запросом к `gp.monthly_production`. Список скважин включает координаты устья из `well_locations` (JOIN). Раздаёт статический фронт `web/` (`UseDefaultFiles` + `UseStaticFiles`). |
 | `src/GeoPulse.Aggregator` | Консольный BackgroundService, Kafka не использует. На старте и далее по таймеру `RecalcIntervalSeconds` (по умолчанию 60 с) полностью пересобирает `gp.monthly_production` из `gp.production_daily FINAL`: `TRUNCATE` + `INSERT ... SELECT` с группировкой по `well_id`, году и месяцу. Состояния в памяти нет, поэтому повторные пересборки результат не меняют. Окно между `TRUNCATE` и вставкой — см. «Известные ограничения». |
 
 ### Схема событий (schemaVersion: 1)
@@ -67,7 +67,7 @@ ClickHouse gp.monthly_production ──▶ GeoPulse.WebAPI (/api/Analytics/*)
 | Сущность | Значение |
 | --- | --- |
 | PostgreSQL: база | `geopulse_core` (пользователь/пароль `geopulse`/`geopulse`) |
-| PostgreSQL: схема данных | `public` (`wells`, `daily_production`); схемы `data` нет |
+| PostgreSQL: схема данных | `public` (`wells`, `daily_production`, `well_locations`); схемы `data` нет |
 | PostgreSQL: схема аналитики | `analytics` (`monthly_production`) — заморожена, справочный снимок |
 | ClickHouse: база | `gp` (`wells`, `production_daily`, `monthly_production`); SQL — с полным именем `gp.<таблица>` |
 | Kafka: топики | `production-daily` (3 партиции), `production-daily-dlq` (1 партиция) |
@@ -117,7 +117,7 @@ ClickHouse gp.monthly_production ──▶ GeoPulse.WebAPI (/api/Analytics/*)
    dotnet run --project src/GeoPulse.Aggregator
    ```
 
-7. Проверка: <http://localhost:5146/swagger> (`GET /api/wells` — список скважин, `GET /api/wells/5351/production?pageSize=20` — суточная добыча, `GET /health` — состояние API и БД, `GET /api/Analytics/summary` — суммарная добыча из ClickHouse), kafka-ui: <http://localhost:8080>. Данные в ClickHouse:
+7. Проверка: карта — <http://localhost:5146/>, Swagger — <http://localhost:5146/swagger> (`GET /api/wells` — список скважин с координатами, `GET /api/wells/5351/production?pageSize=20` — суточная добыча, `GET /health` — состояние API и БД, `GET /api/Analytics/summary` — суммарная добыча из ClickHouse), kafka-ui: <http://localhost:8080>. Данные в ClickHouse:
 
    ```bash
    docker exec geopulse-clickhouse clickhouse-client --query "SELECT count() FROM gp.production_daily FINAL"
@@ -127,6 +127,14 @@ ClickHouse gp.monthly_production ──▶ GeoPulse.WebAPI (/api/Analytics/*)
    Полная проверка API — смок-тест из раздела «Смок-тест API».
 
 Порядок важен: сначала оба читателя (Consumer, CHIngest), затем Ingestion; агрегатор можно запускать в любой момент — он пересчитывает агрегаты по таймеру. Повторный запуск Ingestion безопасен: события уже в базах, консьюмер покажет «вставлено 0, пропущено N», а ClickHouse дедуплицирует дубли средствами `ReplacingMergeTree` (чтение через `FINAL`). Данные между Kafka и хранилищами — at-least-once; идемпотентность записи в PostgreSQL и движок ClickHouse компенсируют возможные дубликаты. WebAPI в compose поднимается автоматически; для локального запуска — `dotnet run --project src/GeoPulse.WebAPI` (порт 5146).
+
+Координаты устьев скважин (для карты) заполняются отдельным идемпотентным сидом после загрузки скважин (шаг 5):
+
+```bash
+docker exec -i geopulse-postgres psql -U geopulse -d geopulse_core < sql/seed_well_locations.sql
+```
+
+Повторный запуск безопасен: `ON CONFLICT DO UPDATE` по `well_id` оставляет ровно 7 строк в `well_locations`.
 
 ## Смок-тест полного цикла
 
@@ -149,11 +157,11 @@ API отдаёт точечные данные из PostgreSQL, а аналит�
 | Метод и путь | Назначение |
 | --- | --- |
 | `GET /health` | Состояние API и подключения к PostgreSQL: `200` + `status=ok`, либо `503` + `status=degraded`, `database=down` |
-| `GET /api/wells` | Список скважин |
+| `GET /api/wells` | Список скважин с координатами устья: `well_id`, `npdWellBoreCode`, `name`, `field`, `latitude`, `longitude` (JOIN `well_locations`) |
 | `GET /api/wells/{npdWellBoreCode}` | Карточка скважины и покрытие данными: `firstProductionDate`, `lastProductionDate`, `productionDays` |
 | `GET /api/wells/{npdWellBoreCode}/production` | Суточная добыча скважины: диапазон дат, сортировка, пагинация |
 | `GET /api/wells/{npdWellBoreCode}/production/{date}` | Одна запись за дату (`yyyy-MM-dd`) |
-| `GET /api/Analytics/monthly?wellCode={code}` | Помесячные агрегаты одной скважины (`wellCode` — это `npdWellBoreCode`) из `gp.monthly_production` (ClickHouse) |
+| `GET /api/Analytics/monthly?wellId={id}` или `?wellCode={code}` | Помесячные агрегаты одной скважины из `gp.monthly_production` (ClickHouse); `wellCode` — `npdWellBoreCode` (прежний контракт), `wellId` — внутренний id |
 | `GET /api/Analytics/summary` | Суммарная добыча по всем скважинам за всё время: один SQL-запрос к `gp.monthly_production` (ClickHouse) |
 
 Параметры выборки суточной добычи:
@@ -205,7 +213,7 @@ powershell -ExecutionPolicy Bypass -File tests/smoke/webapi-smoke.ps1 -BaseUrl h
 | 2. Пайплайн Kafka | закрыт | Ingestion публикует `well.registered` и `production.daily`; Consumer идемпотентно пишет в PostgreSQL; DLQ проверена. |
 | 3. REST API | закрыт | Список и карточка скважины, суточная добыча с фильтрами, сортировкой и пагинацией, health, ProblemDetails, Swagger. |
 | 4. Аналитика на ClickHouse | закрыт | CHIngest (сырые события в `gp`, `ReplacingMergeTree`, чтение `FINAL`) и Aggregator (пересборка `gp.monthly_production` по таймеру), `/api/Analytics/*` из ClickHouse. Контрольные числа: 15 634 строки добычи, 7 скважин, 526 агрегатов, `totalOilVol` ≈ 10 037 080.61. |
-| 5. Веб-клиент с картой | план | Карта месторождения, скважины и их показатели, графики добычи поверх текущего API. |
+| 5. Веб-клиент с картой | закрыт | Статический фронт `web/` (Leaflet + Chart.js, раздаётся WebAPI), координаты устьев из WITSML (ED50→WGS84 EPSG:1613) в `well_locations`, `GET /api/Wells` с `well_id`/`latitude`/`longitude`, `GET /api/Analytics/monthly?wellId`. |
 | 6. Отчёты | план | Отчёты по добыче: период, скважина, сводные таблицы, выгрузка. |
 | 7. WITSML-данные | план | Траектории, перфорации и пики из `Volve_Well_technical_data`. |
 | 8. Деплой на VPS | план | Развёртывание стека на удалённом сервере. |

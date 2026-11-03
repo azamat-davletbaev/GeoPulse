@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoPulse — карта скважин Volve</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>GeoPulse</h1>
+    <span class="subtitle">Месторождение Volve — интерактивная карта скважин</span>
+  </header>
+
+  <main id="map" aria-label="Карта скважин"></main>
+
+  <aside id="panel" class="panel" aria-hidden="true">
+    <div class="panel-head">
+      <h2 id="panel-title"></h2>
+      <button id="panel-close" type="button" aria-label="Закрыть панель">&times;</button>
+    </div>
+    <div class="panel-body">
+      <canvas id="chart"></canvas>
+    </div>
+    <p id="panel-error" class="panel-error" hidden></p>
+  </aside>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

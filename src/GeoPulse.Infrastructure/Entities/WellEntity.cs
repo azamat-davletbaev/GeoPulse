@@ -20,5 +20,8 @@ namespace GeoPulse.Infrastructure.Entities
 
         /// <summary>Записи суточной добычи.</summary>
         public List<DailyProductionEntity> DailyProduction { get; set; } = new();
+
+        /// <summary>Координаты устья (1:1).</summary>
+        public WellLocationEntity? WellLocation { get; set; }
     }
 }

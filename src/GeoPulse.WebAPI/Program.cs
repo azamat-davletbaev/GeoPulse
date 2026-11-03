@@ -1,6 +1,7 @@
 using System.Reflection;
 using GeoPulse.Infrastructure;
 using GeoPulse.WebAPI;
+using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,6 +35,22 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+}
+
+// Статический фронт (папка web/) — раздаётся самим WebAPI.
+// Локально путь разрешается относительно корня содержимого (корень репозитория),
+// в опубликованном/контейнерном образе — рядом с исполняемым файлом.
+var webRoot = Path.Combine(app.Environment.ContentRootPath, "web");
+if (!Directory.Exists(webRoot))
+{
+    webRoot = Path.Combine(AppContext.BaseDirectory, "web");
+}
+
+if (Directory.Exists(webRoot))
+{
+    var webFileProvider = new PhysicalFileProvider(webRoot);
+    app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = webFileProvider });
+    app.UseStaticFiles(new StaticFileOptions { FileProvider = webFileProvider });
 }
 
 app.MapControllers();

@@ -1,0 +1,131 @@
+:root {
+  --bg: #f5f7fa;
+  --ink: #1f2937;
+  --muted: #6b7280;
+  --accent: #2f6fed;
+  --panel-bg: #ffffff;
+  --border: #e5e7eb;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.topbar h1 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.topbar .subtitle {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+#map {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+.panel {
+  position: fixed;
+  top: 68px;
+  right: 16px;
+  z-index: 1200;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 84px);
+  display: none;
+  flex-direction: column;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.panel.open {
+  display: flex;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-head h2 {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-head button {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.panel-head button:hover {
+  color: var(--ink);
+}
+
+.panel-body {
+  position: relative;
+  height: 320px;
+  padding: 12px 14px;
+}
+
+.panel-error {
+  padding: 0 14px 12px;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.leaflet-popup-content {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.leaflet-popup-content strong {
+  font-size: 14px;
+}

@@ -26,4 +26,14 @@
     <ProjectReference Include="..\GeoPulse.Infrastructure\GeoPulse.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Статический фронт из корня репозитория (web/) копируется в вывод/публикацию,
+         чтобы WebAPI раздавал его и локально, и в Docker-образе. -->
+    <Content Include="..\..\web\**\*">
+      <Link>web\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

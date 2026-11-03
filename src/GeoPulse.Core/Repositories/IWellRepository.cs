@@ -14,6 +14,9 @@ namespace GeoPulse.Core.Repositories
         /// <summary>Все скважины.</summary>
         Task<IReadOnlyList<Well>> GetAllAsync(CancellationToken cancellationToken = default);
 
+        /// <summary>Все скважины с координатами устья (LEFT JOIN well_locations).</summary>
+        Task<IReadOnlyList<WellLocation>> GetAllWithLocationsAsync(CancellationToken cancellationToken = default);
+
         /// <summary>Пакетная вставка скважин; после сохранения заполняет <see cref="Well.Id"/>.</summary>
         Task AddRangeAsync(IEnumerable<Well> wells, CancellationToken cancellationToken = default);
 
