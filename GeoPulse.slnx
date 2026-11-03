@@ -8,4 +8,7 @@
     <Project Path="src/GeoPulse.CHIngest/GeoPulse.CHIngest.csproj" />
     <Project Path="src/GeoPulse.WebAPI/GeoPulse.WebAPI.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GeoPulse.Tests/GeoPulse.Tests.csproj" />
+  </Folder>
 </Solution>

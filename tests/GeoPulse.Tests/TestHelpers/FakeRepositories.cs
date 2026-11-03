@@ -1,0 +1,60 @@
+namespace GeoPulse.Tests.TestHelpers;
+
+/// <summary>In-memory подмена IWellRepository для контрактных тестов API.</summary>
+internal sealed class FakeWellRepository : IWellRepository
+{
+    private readonly List<Well> _wells;
+    private readonly List<WellLocation> _locations;
+
+    public FakeWellRepository(IEnumerable<Well>? wells = null, IEnumerable<WellLocation>? locations = null)
+    {
+        _wells = wells?.ToList() ?? new List<Well>();
+        _locations = locations?.ToList() ?? new List<WellLocation>();
+    }
+
+    public Task<Well?> GetByIdAsync(int id, CancellationToken cancellationToken = default) =>
+        Task.FromResult(_wells.FirstOrDefault(well => well.Id == id));
+
+    public Task<Well?> GetByNpdWellBoreCodeAsync(int npdWellBoreCode, CancellationToken cancellationToken = default) =>
+        Task.FromResult(_wells.FirstOrDefault(well => well.NpdWellBoreCode == npdWellBoreCode));
+
+    public Task<IReadOnlyList<Well>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Well>>(_wells);
+
+    public Task<IReadOnlyList<WellLocation>> GetAllWithLocationsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<WellLocation>>(_locations);
+
+    public Task AddRangeAsync(IEnumerable<Well> wells, CancellationToken cancellationToken = default)
+    {
+        _wells.AddRange(wells);
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> ExistsAsync(int npdWellBoreCode, CancellationToken cancellationToken = default) =>
+        Task.FromResult(_wells.Any(well => well.NpdWellBoreCode == npdWellBoreCode));
+}
+
+/// <summary>In-memory подмена IDailyProductionRepository (в контрактных тестах не используется).</summary>
+internal sealed class FakeDailyProductionRepository : IDailyProductionRepository
+{
+    public Task<DailyProduction?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        Task.FromResult<DailyProduction?>(null);
+
+    public Task<IReadOnlyList<DailyProduction>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<DailyProduction>>(Array.Empty<DailyProduction>());
+
+    public Task AddRangeAsync(IEnumerable<DailyProduction> items, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    public Task<PagedResult<DailyProduction>> GetPageAsync(int wellId, DailyProductionQuery query, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new PagedResult<DailyProduction>());
+
+    public Task<DailyProduction?> GetByDateAsync(int wellId, DateOnly date, CancellationToken cancellationToken = default) =>
+        Task.FromResult<DailyProduction?>(null);
+
+    public Task<ProductionCoverage?> GetCoverageAsync(int wellId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<ProductionCoverage?>(null);
+
+    public Task<bool> ExistsAsync(int wellId, DateOnly date, CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+}

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>GeoPulse.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.14" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Testcontainers" Version="4.16.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.16.0" />
+    <PackageReference Include="Testcontainers.Kafka" Version="4.16.0" />
+    <PackageReference Include="Testcontainers.ClickHouse" Version="4.16.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GeoPulse.Core\GeoPulse.Core.csproj" />
+    <ProjectReference Include="..\..\src\GeoPulse.Infrastructure\GeoPulse.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\GeoPulse.Ingestion.Service\GeoPulse.Ingestion.Service.csproj" />
+    <ProjectReference Include="..\..\src\GeoPulse.Consumer\GeoPulse.Consumer.csproj" />
+    <ProjectReference Include="..\..\src\GeoPulse.CHIngest\GeoPulse.CHIngest.csproj" />
+    <ProjectReference Include="..\..\src\GeoPulse.WebAPI\GeoPulse.WebAPI.csproj" />
+  </ItemGroup>
+
+</Project>
