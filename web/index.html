@@ -4,7 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GeoPulse — карта скважин Volve</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <!-- Leaflet 1.9.4 и Chart.js 4.4.1 лежат локально в web/vendor/ (те же версии,
+       что раньше отдавали CDN), поэтому JS/CSS работают без доступа в интернет.
+       Сетевыми остаются только тайлы карты tile.openstreetmap.org.
+       Структура vendor/leaflet/ повторяет dist Leaflet: leaflet.css ссылается
+       на images/marker-icon.png относительным путём. -->
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -26,8 +31,8 @@
     <p id="panel-error" class="panel-error" hidden></p>
   </aside>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="/vendor/chartjs/chart.umd.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

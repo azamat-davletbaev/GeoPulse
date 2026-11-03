@@ -29,7 +29,12 @@ body {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 1100;
+  /* Leaflet внутри карты поднимает свои слои до z-index 1000 (контролы)
+     и 700 (попапы), поэтому у шапки должен быть запас сверху. */
+  z-index: 2000;
+  /* Собственный stacking context: гарантирует, что шапка не окажется
+     под панелями карты ни при каком состоянии. */
+  isolation: isolate;
   display: flex;
   align-items: baseline;
   gap: 12px;
@@ -54,6 +59,17 @@ body {
   position: fixed;
   inset: 0;
   z-index: 0;
+  /* Изолируем stacking context карты: панели (tile/overlay/marker/popup),
+     контролы (z-index до 1000) и попапы Leaflet остаются внутри #map
+     и не могут перекрыть шапку или панель с графиком. */
+  isolation: isolate;
+}
+
+/* Верхние контролы Leaflet (zoom, attribution сверху) опускаем ниже фиксированной
+   шапки: её высота ~50px, плюс штатный отступ Leaflet 10px. Иначе после поднятия
+   z-index шапки кнопки зума оказались бы спрятаны под ней. */
+.leaflet-top {
+  top: 52px;
 }
 
 .panel {

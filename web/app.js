@@ -26,12 +26,18 @@ function formatNumber(value) {
   return Number(value ?? 0).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
 }
 
+// Пользовательские подписи скважины всегда начинаются со слова «Скважина»:
+// и в попапе, и в заголовке панели с графиком.
+function wellCaption(well) {
+  return `Скважина ${well.name}`;
+}
+
 function popupHtml(well, totalOil) {
   const oil = totalOil === null || totalOil === undefined
     ? '—'
     : formatNumber(totalOil) + ' м³';
   return (
-    `<strong>${escapeHtml(well.name)}</strong><br>` +
+    `<strong>${escapeHtml(wellCaption(well))}</strong><br>` +
     `Месторождение: ${escapeHtml(well.field)}<br>` +
     `Добыча нефти (суммарно): ${oil}`
   );
@@ -52,7 +58,7 @@ function closePanel() {
 }
 
 function showChart(well, monthly) {
-  document.getElementById('panel-title').textContent = `${well.name} — ${well.field}`;
+  document.getElementById('panel-title').textContent = `${wellCaption(well)} — ${well.field}`;
   document.getElementById('panel-error').hidden = true;
   openPanel();
 
@@ -113,7 +119,7 @@ function showChart(well, monthly) {
 }
 
 function showPanelError(well, error) {
-  document.getElementById('panel-title').textContent = well.name;
+  document.getElementById('panel-title').textContent = wellCaption(well);
   document.getElementById('panel-error').textContent =
     'Не удалось загрузить добычу: ' + (error && error.message ? error.message : error);
   document.getElementById('panel-error').hidden = false;
@@ -132,6 +138,21 @@ async function onMarkerClick(well, marker) {
   } catch (error) {
     showPanelError(well, error);
   }
+}
+
+// Первичный вид карты задаётся фиксированным зумом, а не fitBounds:
+// все 7 скважин Volve стоят в прямоугольнике ~9 × 7 м (замер по /api/wells),
+// поэтому fitBounds вырождался в «случайный» максимальный зум.
+// На широте ~58.44° зум 16 даёт ~1.25 м/пиксель: кластер занимает ~7 × 6 px,
+// то есть весь набор устьев гарантированно в кадре на любом экране, а расстояние
+// между маркерами вдвое больше, чем на зуме 15, — их проще различить и выбрать.
+const INITIAL_ZOOM = 16;
+
+// Центр первичного вида — среднее арифметическое координат скважин из /api/wells.
+function averageCenter(wells) {
+  const lat = wells.reduce((sum, well) => sum + well.latitude, 0) / wells.length;
+  const lon = wells.reduce((sum, well) => sum + well.longitude, 0) / wells.length;
+  return [lat, lon];
 }
 
 async function init() {
@@ -153,8 +174,8 @@ async function init() {
   }
 
   if (located.length > 0) {
-    const bounds = L.latLngBounds(located.map((w) => [w.latitude, w.longitude]));
-    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 13 });
+    // Фиксированный первичный вид: центр — средние координаты скважин, зум — константа.
+    map.setView(averageCenter(located), INITIAL_ZOOM);
   } else {
     map.setView([0, 0], 2);
   }
