@@ -76,13 +76,17 @@ function latLngBounds(initial) {
 }
 
 const mapCalls = { setView: [], flyTo: [], added: [] };
+let currentZoom = 4;
 const map = {
   setView(center, zoom) {
     mapCalls.setView.push({ center: new LatLng(Number(center[0]), Number(center[1])), zoom });
+    currentZoom = zoom;
     return map;
   },
   flyTo(center, zoom, options) {
     mapCalls.flyTo.push({ center: new LatLng(Number(center[0]), Number(center[1])), zoom, options });
+    // Полёт в заглушке долетает сразу: endZoom = targetZoom.
+    currentZoom = zoom;
     return map;
   },
   once(event, cb) {
@@ -90,6 +94,15 @@ const map = {
     if (event === 'moveend') {
       cb();
     }
+    return map;
+  },
+  on() {
+    return map;
+  },
+  getZoom() {
+    return currentZoom;
+  },
+  removeLayer() {
     return map;
   },
   createPane() {
@@ -112,6 +125,9 @@ function makePath(kind, latlngs, options) {
     latlngs,
     options,
     bindPopup: () => layer,
+    bindTooltip: () => layer,
+    openTooltip: () => layer,
+    closeTooltip: () => layer,
     on: () => layer,
     setPopupContent: () => layer,
     openPopup: () => layer,
@@ -141,7 +157,22 @@ function makePath(kind, latlngs, options) {
 
 const L = {
   map: () => map,
-  tileLayer: () => ({ addTo: () => ({}) }),
+  // Базовый слой: 'load' считаем уже случившимся, иначе вводный перелёт
+  // стартовал бы только по fallback-таймауту (1.5 с) — дольше окна проверки.
+  tileLayer() {
+    const layer = {
+      once(event, cb) {
+        if (event === 'load') {
+          cb();
+        }
+        return layer;
+      },
+      addTo: () => layer
+    };
+    return layer;
+  },
+  point: (x, y) => ({ x, y }),
+  Icon: { Default: {} },
   layerGroup() {
     const group = {
       children: [],
@@ -221,6 +252,8 @@ globalThis.fetch = async (url) => {
 globalThis.L = L;
 globalThis.console = sandboxConsole;
 globalThis.window = globalThis;
+// app.js подписывается на resize окна — в Node этого API нет, ставим пустую заглушку.
+globalThis.addEventListener = () => {};
 globalThis.sessionStorage = { getItem: () => null, setItem: () => {} };
 globalThis.echarts = { init: () => ({ setOption() {}, dispose() {} }) };
 globalThis.document = {
@@ -268,11 +301,11 @@ setTimeout(() => {
     problems.push('ожидалось маркеров устьев ' + expected.markers + ', получено ' + wellheadMarkers.length);
   }
 
-  // 5. Перелёт наводится на куст скважин с зумом ~12–13.
+  // 5. Перелёт наводится на куст скважин с зумом 14 (на 13 устья сливаются в пятно).
   if (expected.flyTo === 1) {
     const fly = mapCalls.flyTo[0];
-    if (fly.zoom !== 13) {
-      problems.push('ожидался перелёт с зумом 13, получено ' + fly.zoom);
+    if (fly.zoom !== 14) {
+      problems.push('ожидался перелёт с зумом 14, получено ' + fly.zoom);
     }
     if (!(fly.center.lat >= 58.44 && fly.center.lat <= 58.46 && fly.center.lng >= 1.85 && fly.center.lng <= 1.9)) {
       problems.push('перелёт не наведён на куст скважин: ' + JSON.stringify(fly.center));
