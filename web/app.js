@@ -28,6 +28,19 @@
   const TRAJECTORY_CASCADE_DELAY_MS = 150;
   const INTRO_SESSION_KEY = 'geopulse.introSeen';
 
+  // Мобильная панель скважины занимает нижние 55dvh экрана (style.css,
+  // @media (max-width: 768px)). На телефоне куст центрируется не в центре карты,
+  // а в её видимой верхней части — иначе скважины уезжают под панель.
+  const MOBILE_LAYOUT_QUERY = '(max-width: 768px)';
+  // Запас по краям видимой области при подгонке куста над панелью, px.
+  const PANEL_FIT_PADDING_PX = 20;
+  // Панель показывается сменой display (без CSS-перехода), но размер контейнера
+  // Leaflet читает уже после раскладки — подгонка выполняется следующим тиком.
+  const PANEL_FIT_DELAY_MS = 60;
+  // Задержка проверки подгона: анимация зума Leaflet заканчивается через 250 мс
+  // своим _onZoomTransitionEnd, который может вернуть прежний вид карты.
+  const PANEL_FIT_RETRY_MS = 400;
+
   // Данные на карте скрыты до конца вводного полёта: с высоты космоса семь устьев
   // сливаются в оранжевое пятно. Класс на контейнере карты гасит панели слоёв
   // (opacity 0), а его снятие даёт плавный fade-in ~400 мс — переход в style.css.
@@ -128,6 +141,12 @@
   // Промис фоновой предзагрузки помесячных данных: автовыбор ждёт его, если полёт
   // закончился раньше, — панель не должна открываться пустой.
   let preloadPromise = Promise.resolve();
+  // Вид карты до первого мобильного подгона куста под панель: закрытие панели
+  // возвращает именно его (на десктопе переменная всегда null — поведение прежнее).
+  let viewBeforePanelFit = null;
+  // Токен отложенной подгонки: новый выбор или закрытие панели отменяют предыдущую,
+  // чтобы запоздавший fitBounds не перебил актуальный вид карты.
+  let panelFitToken = 0;
 
   function el(id) {
     return document.getElementById(id);
@@ -259,8 +278,18 @@
     return `забой, ${text} м`;
   }
   function openPanel() {
-    el('panel').classList.add('open');
-    el('panel').setAttribute('aria-hidden', 'false');
+    const panel = el('panel');
+    // Подгон карты нужен только при переходе «закрыто → открыто»: повторные вызовы
+    // в рамках одного выбора (скелетон → график → ошибка) вид карты не двигают.
+    const wasOpen = panel.classList.contains('open');
+
+    panel.classList.add('open');
+    panel.setAttribute('aria-hidden', 'false');
+
+    if (!wasOpen) {
+      // На десктопе функция сразу выходит: панель не перекрывает куст.
+      fitClusterAbovePanel();
+    }
   }
 
   // Панель не закрывается кликом по карте: единственный способ — крестик,
@@ -465,6 +494,8 @@
     el('panel-error').hidden = true;
     syncWellListSelection();
     closePanel();
+    // Мобильный режим: панель больше ничего не перекрывает — возвращаем прежний вид.
+    restoreViewAfterPanel();
   }
 
   async function selectWell(well) {
@@ -917,6 +948,153 @@
     } else {
       map.setView(FALLBACK_CENTER, FALLBACK_ZOOM);
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Мобильный режим: куст в видимой части карты над панелью скважины
+  // ------------------------------------------------------------------
+  // Панель на телефоне — нижний лист высотой 55dvh (style.css), поэтому центр
+  // карты для куста смещён вверх: отступ снизу равен фактической высоте панели.
+
+  // Тот же медиазапрос, что и у CSS-правила панели. Без matchMedia (старые
+  // окружения, node-заглушки теста) считаем, что десктоп — поведение не меняется.
+  function isMobileLayout() {
+    if (typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    try {
+      return window.matchMedia(MOBILE_LAYOUT_QUERY).matches;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Границы куста: устья (computeCluster) плюс уже построенные линии траекторий.
+  // Забои уходят от устьев на юго-восток — без линий край видимой полосы обрезал бы стволы.
+  function clusterBounds() {
+    const bounds = computeCluster(orderedWells);
+
+    wellLayers.forEach((entry) => {
+      const trajectory = entry.trajectory === undefined ? null : entry.trajectory;
+      const core = trajectory === null ? null : trajectory.core;
+      if (core === null || typeof core.getBounds !== 'function') {
+        return;
+      }
+      try {
+        bounds.extend(core.getBounds());
+      } catch (error) {
+        console.warn('Границы траектории не добавлены к кусту', error);
+      }
+    });
+
+    return bounds;
+  }
+
+  // Высота части карты, которую закрывает панель, в пикселях: берём фактический
+  // offsetHeight из раскладки (55dvh считается браузером, включая адресную строку).
+  function panelOverlapHeight() {
+    const panel = el('panel');
+    if (panel === null || panel === undefined) {
+      return 0;
+    }
+    return Math.round(panel.offsetHeight || 0);
+  }
+
+  // Опции подгона куста: отступ снизу равен фактической высоте панели, поэтому
+  // bounds попадает в видимую полосу над ней. Выше вводного зума не приближаем:
+  // без линий траекторий (они приходят каскадом) bounds устьев — пятно ~10 м,
+  // и fitBounds ушёл бы в глубину.
+  function panelFitOptions(overlap, animate) {
+    return {
+      paddingTopLeft: [PANEL_FIT_PADDING_PX, PANEL_FIT_PADDING_PX],
+      paddingBottomRight: [PANEL_FIT_PADDING_PX, overlap + PANEL_FIT_PADDING_PX],
+      maxZoom: INTRO_TARGET_ZOOM,
+      animate: animate
+    };
+  }
+
+  // Куст целиком умещается в полосе карты над панелью? Проверка публичным API
+  // Leaflet (latLngToContainerPoint), без ручных сдвигов в пикселях.
+  function clusterFitsAbovePanel(bounds, overlap) {
+    const size = map.getSize();
+    const southWest = map.latLngToContainerPoint(bounds.getSouthWest());
+    const northEast = map.latLngToContainerPoint(bounds.getNorthEast());
+    const left = Math.min(southWest.x, northEast.x);
+    const right = Math.max(southWest.x, northEast.x);
+    const top = Math.min(southWest.y, northEast.y);
+    const bottom = Math.max(southWest.y, northEast.y);
+
+    return left >= 0 && top >= 0 && right <= size.x && bottom <= size.y - overlap;
+  }
+
+  // Подгон куста в видимую полосу над панелью. Только для мобильной ширины:
+  // на десктопе функция выходит сразу, поэтому вид карты там прежний.
+  function fitClusterAbovePanel() {
+    if (!isMobileLayout()) {
+      return;
+    }
+
+    const bounds = clusterBounds();
+    if (!bounds.isValid()) {
+      return;
+    }
+
+    // Вид до первого подгона: закрытие панели вернёт карту именно сюда.
+    if (viewBeforePanelFit === null) {
+      viewBeforePanelFit = { center: map.getCenter(), zoom: map.getZoom() };
+    }
+
+    panelFitToken += 1;
+    const token = panelFitToken;
+    const bottom = panelOverlapHeight();
+
+    // Панель показывается сменой display без перехода, но размер контейнера
+    // Leaflet читает после раскладки — иначе fitBounds посчитает по старому виду.
+    setTimeout(() => {
+      // За время ожидания панель могли закрыть или выбрать другую скважину.
+      if (token !== panelFitToken || !isMobileLayout()) {
+        return;
+      }
+
+      // Вводный flyTo мог ещё не доехать (страховочный таймер обгоняет анимацию
+      // на медленном устройстве): без stop() остаток полёта перебил бы подгон.
+      map.stop();
+      map.invalidateSize();
+      map.fitBounds(bounds, panelFitOptions(bottom, true));
+
+      // Прерванная анимация зума Leaflet возвращает свой прежний вид уже после
+      // fitBounds. Если куст не оказался над панелью — повторяем подгон один раз,
+      // уже без анимации (иначе карта осталась бы с кустом под панелью).
+      setTimeout(() => {
+        if (token !== panelFitToken || !isMobileLayout()) {
+          return;
+        }
+        if (clusterFitsAbovePanel(bounds, bottom)) {
+          return;
+        }
+
+        map.invalidateSize();
+        map.fitBounds(bounds, panelFitOptions(bottom, false));
+      }, PANEL_FIT_RETRY_MS);
+    }, PANEL_FIT_DELAY_MS);
+  }
+
+  // Закрытие панели: карта возвращается к виду, сохранённому перед подгоном.
+  // Если подгона не было (десктоп), ничего не происходит.
+  function restoreViewAfterPanel() {
+    // Отменяем ещё не выполненный подгон: иначе он сработает после закрытия.
+    panelFitToken += 1;
+
+    if (viewBeforePanelFit === null) {
+      return;
+    }
+
+    const view = viewBeforePanelFit;
+    viewBeforePanelFit = null;
+
+    // Панель скрыта — Leaflet должен прочитать контейнер заново, затем прежний вид.
+    map.invalidateSize();
+    map.setView(view.center, view.zoom);
   }
 
   function flyToCluster(located) {

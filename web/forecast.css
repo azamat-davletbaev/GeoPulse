@@ -110,3 +110,17 @@
   font-size: 14px;
   margin-bottom: 14px;
 }
+
+/* Карточка «План внедрения прогноза»: только абзацная типографика — размер и
+   интерлиньяж те же, что у текста карточек на вкладке «О проекте».
+   Область действия ограничена этой карточкой, глобальные стили не затронуты. */
+.forecast .plan p {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.forecast .plan p:last-child {
+  margin-bottom: 0;
+}
