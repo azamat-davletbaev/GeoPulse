@@ -38,6 +38,18 @@
 
 Все команды — от пользователя с `sudo`. Первый вход — по SSH-ключу.
 
+> **Автоматизация.** Шаги 1.1–1.4, а также клонирование репозитория в
+> `/opt/geopulse`, создание `.env` из `.env.example`, `docker login ghcr.io` и
+> настройку UFW выполняет идемпотентный скрипт `scripts/bootstrap-server.sh`:
+>
+> ```bash
+> sudo DEPLOY_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" \
+>      GHCR_TOKEN="<PAT с read:packages, если пакеты приватные>" \
+>      bash scripts/bootstrap-server.sh
+> ```
+>
+> Ниже шаги описаны вручную — на случай отладки или нестандартной конфигурации.
+
 ### 1.1. Обновление пакетов
 
 ```bash
@@ -228,17 +240,36 @@ docker exec -i geopulse-postgres pg_restore -U geopulse -d geopulse_core --clean
 
 ## 5. Обновление демо следующим коммитом
 
-1. Внести изменения, запушить в `main`.
-2. GitHub Actions `deploy.yml` соберёт и опубликует новые образы (тег `latest` + SHA).
-3. На сервере:
+Всё автоматизировано: после пуша в `main` workflow `deploy.yml` собирает образы
+(теги `latest` и короткий SHA) и job `deploy` по SSH выполняет
+`bash /opt/geopulse/deploy.sh` с `IMAGE_TAG=<короткий SHA>`.
+
+`deploy.sh` делает по шагам: `git pull --ff-only` → `docker compose pull` →
+подъём postgres/kafka/clickhouse и ожидание готовности → миграции EF Core →
+создание топиков Kafka → `docker compose up -d --remove-orphans` →
+health-check `GET /health` (до 60 с) → `docker image prune -f` и сводка.
+При провале health-check скрипт завершается с кодом 1, печатает команду откатa
+и **не удаляет старые образы**.
+
+Ручной деплой (то же самое, но руками):
 
 ```bash
 cd /opt/geopulse
-docker compose -f docker-compose.prod.yml pull        # подтянуть новые latest
-docker compose -f docker-compose.prod.yml up -d       # пересоздать изменившиеся контейнеры
+IMAGE_TAG=latest bash deploy.sh        # или IMAGE_TAG=<короткий SHA>
 ```
 
-Для отката на конкретный коммит — задать `TAG` в `.env` (короткий SHA) и повторить `pull`/`up -d`.
+Тег образов хранится в `.env` (`DOCKER_TAG`), который читает
+`docker-compose.prod.yml`; `deploy.sh` перед `pull` обновляет его на переданный
+`IMAGE_TAG`.
+
+Откат на предыдущий коммит:
+
+```bash
+cd /opt/geopulse
+sed -i 's/^DOCKER_TAG=.*/DOCKER_TAG=<короткий SHA>/' .env
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
 
 ---
 

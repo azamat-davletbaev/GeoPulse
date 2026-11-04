@@ -6,6 +6,8 @@
 #
 # Переменные окружения берутся из файла .env (см. .env.example). Секреты — в .env,
 # в репозиторий не коммитятся.
+# Тег образов приложения — DOCKER_TAG (latest или короткий SHA коммита);
+# его обновляет deploy.sh при каждом релизе, вручную — для отката.
 
 services:
   postgres:
@@ -87,7 +89,7 @@ services:
     # Порт наружу не публикуем.
 
   consumer:
-    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-consumer:${TAG:-latest}
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-consumer:${DOCKER_TAG:-latest}
     container_name: geopulse-consumer
     restart: unless-stopped
     environment:
@@ -103,7 +105,7 @@ services:
         condition: service_healthy
 
   chingest:
-    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-chingest:${TAG:-latest}
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-chingest:${DOCKER_TAG:-latest}
     container_name: geopulse-chingest
     restart: unless-stopped
     environment:
@@ -122,7 +124,7 @@ services:
         condition: service_healthy
 
   aggregator:
-    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-aggregator:${TAG:-latest}
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-aggregator:${DOCKER_TAG:-latest}
     container_name: geopulse-aggregator
     restart: unless-stopped
     environment:
@@ -134,7 +136,7 @@ services:
         condition: service_healthy
 
   webapi:
-    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-webapi:${TAG:-latest}
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-webapi:${DOCKER_TAG:-latest}
     container_name: geopulse-webapi
     restart: unless-stopped
     environment:
@@ -168,7 +170,7 @@ services:
   # Одноразовый импорт данных: docker compose run --rm ingestion.
   # В постоянный состав (docker compose up -d) не входит благодаря профилю "init".
   ingestion:
-    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-ingestion:${TAG:-latest}
+    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-ingestion:${DOCKER_TAG:-latest}
     profiles: ["init"]
     environment:
       # Пути к данным (Volve:ProductionWorkbook / Volve:WellboreRoot) запечены в образ

@@ -62,3 +62,47 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/geopulse-${{ matrix.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Деплой на сервер: по SSH запускает /opt/geopulse/deploy.sh.
+  # Ждёт завершения build-and-push — к этому моменту образы с тегом короткого
+  # SHA (и latest) уже лежат в ghcr.io, и сервер может их тянуть.
+  #
+  # Секреты репозитория (Settings -> Secrets and variables -> Actions):
+  #   SSH_HOST          — IP или домен сервера
+  #   SSH_USER          — deploy (создан scripts/bootstrap-server.sh)
+  #   SSH_PRIVATE_KEY   — приватный ключ, пара к DEPLOY_PUBKEY на сервере
+  #   SSH_PORT          — опционально, если SSH не на 22 (тогда поправьте port ниже)
+  #   DEPLOY_TOKEN_GHCR — НЕ используется этим workflow: docker login ghcr.io
+  #                       выполняется один раз на сервере при bootstrap.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to server
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main'
+    # Не запускаем два деплоя одновременно (сервер один) и не отменяем начатый.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Run deploy.sh on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          # Останавливаемся на первой ошибке удалённого скрипта.
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            # deploy.sh сам нормализует полный SHA к короткому тегу ghcr.
+            export IMAGE_TAG="${{ steps.sha.outputs.short }}"
+            cd /opt/geopulse
+            bash ./deploy.sh
