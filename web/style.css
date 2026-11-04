@@ -86,6 +86,9 @@
   --injection: #7d93a8;
   --text: #e8ecf2;
   --muted: #8b95a5;
+  /* Цвет выбора скважины (подсветка строки в списке). На карте тот же оттенок
+     задан в app.js (SELECTION_COLOR) — Leaflet красит SVG, а не CSS. */
+  --selection: #2dd4bf;
   /* Подложка карты: пока тайлы грузятся, контейнер показывает этот цвет,
      а не тёмный фон страницы (иначе на первом кадре видна «чёрная дыра»). */
   --map-bg: #e9e8e4;
@@ -315,81 +318,26 @@ a:hover {
 }
 
 /* ------------------------------------------------------------------ */
-/* Кастомные попапы Leaflet                                            */
+/* Появление данных карты после прилёта (fade-in 400 мс)                */
 /* ------------------------------------------------------------------ */
-/* Панель попапа — на светлой карте нужна тень, иначе «плавает». */
-.leaflet-popup-content-wrapper {
-  background: var(--panel-bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 10px 26px rgba(8, 12, 20, 0.38), 0 2px 6px rgba(8, 12, 20, 0.22);
+/* Пока на #map висит data-pending (идёт вводный полёт), панели слоёв
+   прозрачны: с высоты космоса видна только карта, а не пятно из слитых
+   маркеров. Снятие класса даёт плавное проявление. Анимируется только
+   opacity — transform панелей принадлежит Leaflet (flyTo/zoom). */
+#map .leaflet-overlay-pane,
+#map .leaflet-trajectories-pane,
+#map .leaflet-bottomholes-pane,
+#map .leaflet-marker-pane,
+#map .leaflet-tooltip-pane {
+  transition: opacity 400ms ease;
 }
 
-.leaflet-popup-tip {
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  box-shadow: 0 10px 26px rgba(8, 12, 20, 0.38);
-}
-
-.leaflet-popup-content {
-  margin: 12px 16px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.leaflet-popup-content strong {
-  font-size: 14px;
-}
-
-/* Анимация попапа: только opacity на контейнере содержимого и лёгкий сдвиг
-   на внутренней обёртке .popup-body. Позиционируемый Leaflet-элемент
-   (.leaflet-popup) не анимируется — иначе попап дёргается при панорамировании. */
-.popup-body {
-  animation: gp-popup-in 180ms ease-out both;
-}
-
-.leaflet-popup-content {
-  animation: gp-popup-fade 160ms ease-out both;
-}
-
-.leaflet-popup-content a.popup-report {
-  display: inline-block;
-  margin-top: 8px;
-  color: var(--accent);
-  font-weight: 500;
-}
-
-.leaflet-popup-content a.popup-report:hover {
-  text-decoration: underline;
-}
-
-.leaflet-popup-close-button {
-  color: var(--muted);
-}
-
-.leaflet-popup-close-button:hover {
-  color: var(--text);
-}
-
-@keyframes gp-popup-fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes gp-popup-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+#map.data-pending .leaflet-overlay-pane,
+#map.data-pending .leaflet-trajectories-pane,
+#map.data-pending .leaflet-bottomholes-pane,
+#map.data-pending .leaflet-marker-pane,
+#map.data-pending .leaflet-tooltip-pane {
+  opacity: 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -411,6 +359,28 @@ a:hover {
 
 /* Стрелка-указатель не нужна: подписи стоят колонкой справа от куста устьев. */
 .well-label::before {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Подписи забоев (tooltip Leaflet, зум ≥ 13)                          */
+/* ------------------------------------------------------------------ */
+/* Глубина забоя — второстепенная подпись: мельче и приглушённее подписи
+   устья, чтобы не спорить с ней на светлой подложке. */
+.bottomhole-label {
+  background: rgba(255, 255, 255, 0.88);
+  color: #6b7280;
+  border: 1px solid rgba(35, 44, 59, 0.12);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-family: var(--font);
+  font-size: 10px;
+  line-height: 1.5;
+  box-shadow: 0 1px 3px rgba(16, 22, 32, 0.12);
+}
+
+/* Стрелка не нужна: подпись стоит справа от незалитого кружка забоя. */
+.bottomhole-label::before {
   display: none;
 }
 
@@ -486,6 +456,117 @@ a:hover {
 .panel-chart-skeleton {
   position: absolute;
   inset: 12px 14px;
+}
+
+/* Тело панели прокручивается целиком: график + сводка + список скважин
+   выше экрана, а шапка с крестиком остаётся на месте. */
+.panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Сводка скважины под графиком: поля, которые раньше были в попапе Leaflet. */
+.well-summary {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.summary-list {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.summary-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.summary-row dt {
+  color: var(--muted);
+}
+
+.summary-row dd {
+  color: var(--text);
+  font-weight: 500;
+  text-align: right;
+}
+
+.summary-report {
+  margin-top: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+/* Список скважин под сводкой: пункт = выбор скважины. Устья куста лежат в пятне
+   ~10 м и на доступных зумах не разлепляются, поэтому список — гарантированный
+   доступ к каждой скважине. */
+.panel-list-block {
+  padding: 8px 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.panel-section-title {
+  padding: 0 8px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.well-list {
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.well-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.well-row:hover {
+  background: #1f2836;
+}
+
+/* Выбранная строка — тем же бирюзовым цветом, что подсветка на карте. */
+.well-row[aria-pressed="true"] {
+  background: rgba(45, 212, 191, 0.12);
+  border-color: rgba(45, 212, 191, 0.45);
+}
+
+.well-row-name {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.well-row-value {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.well-row[aria-pressed="true"] .well-row-value {
+  color: var(--text);
 }
 
 .panel-error {

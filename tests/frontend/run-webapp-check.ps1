@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 
 # Корень репозитория: tests/frontend -> tests -> корень.
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$scenarios = @('mixed', 'empty')
+$scenarios = @('mixed', 'empty', 'select', 'autoselect')
 $failed = 0
 
 foreach ($scenario in $scenarios) {

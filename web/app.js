@@ -28,6 +28,11 @@
   const TRAJECTORY_CASCADE_DELAY_MS = 150;
   const INTRO_SESSION_KEY = 'geopulse.introSeen';
 
+  // Данные на карте скрыты до конца вводного полёта: с высоты космоса семь устьев
+  // сливаются в оранжевое пятно. Класс на контейнере карты гасит панели слоёв
+  // (opacity 0), а его снятие даёт плавный fade-in ~400 мс — переход в style.css.
+  const MAP_DATA_PENDING_CLASS = 'data-pending';
+
   // Тайлы Esri World Light Gray Base (Canvas-сервис ArcGIS, без API-ключа):
   // светлая подложка внутри тёмного UI — на ней янтарные траектории читаются лучше,
   // чем на прежней тёмной карте. Порядок уровней — {z}/{y}/{x}, как у сервиса.
@@ -53,6 +58,10 @@
   // идут колонкой с шагом 24 px — плашка подписи ~19 px, запас покрывает разброс точек.
   const WELL_LABEL_STEP_Y = 24;
 
+  // Подписи забоев: конечная точка траектории, значение MD берётся из данных замера.
+  const BOTTOMHOLE_LABEL_MIN_ZOOM = 13;
+  const BOTTOMHOLE_LABEL_OFFSET_X = 7;
+
   // Стиль траекторий: тонкая обводка вместо прежнего свечения — glow на светлой карте
   // выглядит грязью. Сама линия остаётся янтарной.
   const TRAJECTORY_COLOR = PALETTE.oil;
@@ -61,21 +70,36 @@
   const TRAJECTORY_EDGE_COLOR = 'rgba(120, 73, 12, 0.35)';
   const TRAJECTORY_EDGE_WEIGHT = 3.5;
 
-  // Маркеры устья и забоя.
+  // Подсветка выбранной скважины: бирюза читается и на янтарной линии, и на светлых
+  // тайлах. Толщина линии +1 px, у устья — бирюзовая заливка в белой обводке.
+  // Это цвет выбора, а не палитра графиков: «Нефть» везде остаётся янтарной.
+  const SELECTION_COLOR = '#2dd4bf';
+  const SELECTION_EDGE_COLOR = 'rgba(45, 212, 191, 0.30)';
+  const SELECTION_LINE_WEIGHT_BONUS = 1;
+  const SELECTION_FILL_OPACITY = 1;
+
+  // Маркеры устья и забоя. С зума WELLHEAD_COMPACT_MIN_ZOOM устья уменьшаются:
+  // в плотном кусте крупные кружки сливаются в одно пятно.
   const WELLHEAD_RADIUS = 5;
+  const WELLHEAD_RADIUS_COMPACT = 3.5;
+  const WELLHEAD_COMPACT_MIN_ZOOM = 14;
   const WELLHEAD_FILL_COLOR = PALETTE.oil;
   const WELLHEAD_FILL_OPACITY = 0.85;
   const WELLHEAD_STROKE_COLOR = '#ffffff';
   const WELLHEAD_IDLE_WEIGHT = 1.6;
+  const WELLHEAD_IDLE_WEIGHT_COMPACT = 1.2;
   const WELLHEAD_ACTIVE_WEIGHT = 2.4;
   const BOTTOMHOLE_RADIUS = 4;
   const BOTTOMHOLE_COLOR = PALETTE.oil;
   const BOTTOMHOLE_WEIGHT = 1.5;
   const BOTTOMHOLE_OPACITY = 0.7;
 
-  // Пан для траекторий — ниже overlay-панели, чтобы маркеры устьев были поверх линий.
+  // Панели слоёв задают и порядок отрисовки, и приоритет клика при пересечении
+  // объектов: устье (overlay-панель Leaflet, 400) > линия (390) > забой (380).
   const TRAJECTORY_PANE = 'trajectories';
   const TRAJECTORY_PANE_Z_INDEX = 390;
+  const BOTTOMHOLE_PANE = 'bottomholes';
+  const BOTTOMHOLE_PANE_Z_INDEX = 380;
 
   const FALLBACK_CENTER = [0, 0];
   const FALLBACK_ZOOM = 2;
@@ -83,12 +107,31 @@
   let map;
   let chart;
   let fieldTotalOil = null;
-  let selectedMarker = null;
   let selectedWell = null;
   let selectedMonthly = null;
   let introFinished = false;
-  // Пока идёт перелёт, попапы не открываем: Leaflet.autoPan прерывает flyTo (дрожание карты).
-  let introInFlight = false;
+  // Слои по скважинам: устье, линия траектории и забой — нужны для подсветки выбора.
+  const wellLayers = new Map();
+  // Скважины по wellId: список в панели не хранит ссылки на объекты DOM.
+  const wellsById = new Map();
+  // Помесячные данные по скважинам: сводка, список и график не ходят в API повторно.
+  const monthlyByWell = new Map();
+  const monthlyRequests = new Map();
+  // Скважины в порядке API — в том же порядке строится список в панели.
+  let orderedWells = [];
+  // Токен выбора: ответ устаревшего запроса не должен перерисовать панель.
+  let selectionToken = 0;
+  // Данные на карте ещё скрыты (идёт вводный полёт) — клики по невидимым слоям игнорируем.
+  let dataPending = true;
+  // Автовыбор скважины с максимальной суммарной нефтью — один раз за загрузку страницы.
+  let autoSelectDone = false;
+  // Промис фоновой предзагрузки помесячных данных: автовыбор ждёт его, если полёт
+  // закончился раньше, — панель не должна открываться пустой.
+  let preloadPromise = Promise.resolve();
+
+  function el(id) {
+    return document.getElementById(id);
+  }
 
   function wellCaption(well) {
     return `Скважина ${well.name}`;
@@ -145,80 +188,113 @@
     return Number.isInteger(wellId) && wellId > 0 ? `/api/Reports/wells/${wellId}.xlsx` : null;
   }
 
-  // Содержимое попапа заворачивается во внутреннюю обёртку .popup-body: анимировать
-  // можно её (opacity + лёгкий сдвиг), но не позиционируемый самим Leaflet контейнер.
-  function wrapPopup(inner) {
-    return `<div class="popup-body">${inner}</div>`;
+  // ------------------------------------------------------------------
+  // Сводка скважины (правая панель)
+  // ------------------------------------------------------------------
+  // Поля сводки те же, что были в попапе Leaflet. Сам попап убран целиком —
+  // вместе с позиционированием, анимацией и конфликтом autoPan с перелётом.
+  function summaryRow(label, value) {
+    return `<div class="summary-row"><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`;
   }
 
-  function popupHtml(well, monthly) {
+  function summaryHtml(well, monthly) {
     const stats = Array.isArray(monthly) ? wellStats(monthly) : null;
 
-    let html =
-      `<strong>${escapeHtml(wellCaption(well))}</strong><br>` +
-      `Месторождение: ${escapeHtml(well.field)}<br>`;
+    let rows = summaryRow('Месторождение', escapeHtml(well.field));
 
     if (well.tdTvd !== null && well.tdTvd !== undefined) {
-      html += `Забой: ${formatNumber(well.tdTvd)} м<br>`;
+      rows += summaryRow('Забой', `${formatNumber(well.tdTvd)} м`);
     }
 
     if (well.tdMd !== null && well.tdMd !== undefined) {
-      html += `Длина ствола: ${formatNumber(well.tdMd)} м<br>`;
+      rows += summaryRow('Длина ствола', `${formatNumber(well.tdMd)} м`);
     }
 
-    html += `Добыча нефти (суммарно): ${stats === null ? '—' : formatNumber(stats.oil) + ' м³'}`;
+    rows += summaryRow(
+      'Добыча нефти (суммарно)',
+      stats === null ? '—' : `${formatNumber(stats.oil)} м³`
+    );
 
-    if (stats === null) {
-      return wrapPopup(html);
+    if (stats !== null) {
+      const waterCut = stats.lastOilMonth === null
+        ? '—'
+        : `${formatNumber(waterCutPct(stats.lastOilMonth.oilVolSum ?? 0, stats.lastOilMonth.waterVolSum ?? 0))} %` +
+          ` (${escapeHtml(monthLabel(stats.lastOilMonth))})`;
+
+      const peak = stats.peakMonth === null
+        ? '—'
+        : `${formatNumber(stats.peakMonth.oilVolSum)} м³ (${escapeHtml(monthLabel(stats.peakMonth))})`;
+
+      const period = stats.firstOilMonth === null || stats.lastOilMonth === null
+        ? '—'
+        : `${escapeHtml(monthLabel(stats.firstOilMonth))} — ${escapeHtml(monthLabel(stats.lastOilMonth))}`;
+
+      const share = fieldTotalOil === null
+        ? '—'
+        : `${formatNumber(sharePct(stats.oil, fieldTotalOil))} %`;
+
+      rows +=
+        summaryRow('Добыча воды (суммарно)', `${formatNumber(stats.water)} м³`) +
+        summaryRow('Обводнённость', waterCut) +
+        summaryRow('Пик добычи нефти', peak) +
+        summaryRow('Период добычи', period) +
+        summaryRow('Доля в добыче месторождения', share);
     }
-
-    const waterCut = stats.lastOilMonth === null
-      ? '—'
-      : `${formatNumber(waterCutPct(stats.lastOilMonth.oilVolSum ?? 0, stats.lastOilMonth.waterVolSum ?? 0))} %` +
-        ` (${escapeHtml(monthLabel(stats.lastOilMonth))})`;
-
-    const peak = stats.peakMonth === null
-      ? '—'
-      : `${formatNumber(stats.peakMonth.oilVolSum)} м³ (${escapeHtml(monthLabel(stats.peakMonth))})`;
-
-    const period = stats.firstOilMonth === null || stats.lastOilMonth === null
-      ? '—'
-      : `${escapeHtml(monthLabel(stats.firstOilMonth))} — ${escapeHtml(monthLabel(stats.lastOilMonth))}`;
-
-    const share = fieldTotalOil === null
-      ? '—'
-      : `${formatNumber(sharePct(stats.oil, fieldTotalOil))} %`;
-
-    html +=
-      `<br>Добыча воды (суммарно): ${formatNumber(stats.water)} м³` +
-      `<br>Обводнённость: ${waterCut}` +
-      `<br>Пик добычи нефти: ${peak}` +
-      `<br>Период добычи: ${period}` +
-      `<br>Доля в добыче месторождения: ${share}`;
 
     const url = reportUrl(well);
-    if (url !== null) {
-      html += `<br><a class="popup-report" href="${url}">Скачать отчёт (Excel)</a>`;
-    }
+    const report = url === null
+      ? ''
+      : `<a class="button summary-report" href="${url}">Скачать отчёт (Excel)</a>`;
 
-    return wrapPopup(html);
+    return `<dl class="summary-list">${rows}</dl>${report}`;
+  }
+
+  // Подпись забоя: MD последнего замера траектории. Значение берётся из данных,
+  // ничего не досчитывается; без MD подпись не выдумывает глубину.
+  function bottomholeLabel(md) {
+    const value = Number(md);
+    const text = Number.isFinite(value) && value > 0
+      ? value.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+      : '—';
+    return `забой, ${text} м`;
   }
   function openPanel() {
-    document.getElementById('panel').classList.add('open');
-    document.getElementById('panel').setAttribute('aria-hidden', 'false');
+    el('panel').classList.add('open');
+    el('panel').setAttribute('aria-hidden', 'false');
   }
 
+  // Панель не закрывается кликом по карте: единственный способ — крестик,
+  // и он же снимает выбор скважины (см. clearSelection).
   function closePanel() {
-    document.getElementById('panel').classList.remove('open');
-    document.getElementById('panel').setAttribute('aria-hidden', 'true');
-    highlightMarker(null);
+    el('panel').classList.remove('open');
+    el('panel').setAttribute('aria-hidden', 'true');
   }
 
   function showPanelSkeleton(visible) {
-    const el = document.getElementById('chart-skeleton');
-    if (el !== null) {
-      el.hidden = !visible;
+    const skeleton = el('chart-skeleton');
+    if (skeleton !== null) {
+      skeleton.hidden = !visible;
     }
+  }
+
+  function showSummary(well, monthly) {
+    const summary = el('well-summary');
+    if (summary === null) {
+      return;
+    }
+
+    summary.innerHTML = summaryHtml(well, monthly);
+    summary.hidden = false;
+  }
+
+  function clearSummary() {
+    const summary = el('well-summary');
+    if (summary === null) {
+      return;
+    }
+
+    summary.innerHTML = '';
+    summary.hidden = true;
   }
 
   // Освобождаем график перед новой отрисовкой: второй init на том же DOM ECharts
@@ -232,26 +308,33 @@
 
   // Состояние «добыча грузится»: старый график убираем, показываем скелетон.
   function preparePanelLoading(well) {
-    document.getElementById('panel-title').textContent = wellCaption(well);
-    document.getElementById('panel-error').hidden = true;
+    el('panel-title').textContent = wellCaption(well);
+    el('panel-error').hidden = true;
     openPanel();
     disposeChart();
     showPanelSkeleton(true);
   }
 
   function showChart(well, monthly) {
-    document.getElementById('panel-title').textContent = `${wellCaption(well)} — ${well.field}`;
-    document.getElementById('panel-error').hidden = true;
+    el('panel-title').textContent = `${wellCaption(well)} — ${well.field}`;
+    el('panel-error').hidden = true;
     openPanel();
 
     disposeChart();
 
+    const token = selectionToken;
     const labels = monthly.map(monthLabel);
     const oil = monthly.map((m) => m.oilVolSum ?? 0);
     const water = monthly.map((m) => m.waterVolSum ?? 0);
 
     return whenFontsReady().then(() => {
-      chart = echarts.init(document.getElementById('chart'));
+      // Пока ждали шрифты, могли выбрать другую скважину — иначе два init на одном DOM.
+      if (token !== selectionToken) {
+        return;
+      }
+
+      disposeChart();
+      chart = echarts.init(el('chart'));
       chart.setOption(lineChartOption(
         labels,
         [
@@ -266,68 +349,165 @@
   }
 
   function showPanelError(well, error) {
-    document.getElementById('panel-title').textContent = wellCaption(well);
-    document.getElementById('panel-error').textContent =
+    el('panel-title').textContent = wellCaption(well);
+    el('panel-error').textContent =
       'Не удалось загрузить добычу: ' + (error && error.message ? error.message : error);
-    document.getElementById('panel-error').hidden = false;
+    el('panel-error').hidden = false;
     showPanelSkeleton(false);
     openPanel();
   }
 
-  async function selectWell(well, marker, monthly) {
-    highlightMarker(marker);
-    selectedWell = well;
-    selectedMonthly = null;
-    if (marker) {
-      marker.setPopupContent(popupHtml(well, null));
-      // Во время вводного перелёта попап не открываем: autoPan Leaflet'а прерывает
-      // flyTo, из-за чего карта «застревает» и дрожит. Откроем его после прибытия.
-      if (!introInFlight) {
-        marker.openPopup();
-      }
+  // ------------------------------------------------------------------
+  // Выбор скважины: подсветка на карте, сводка и график в панели
+  // ------------------------------------------------------------------
+
+  // Устье: выбранное — бирюзовая заливка в белой обводке. С зума 14 маркеры
+  // уменьшаются: в плотном кусте крупные кружки сливаются в одно пятно.
+  function styleWellhead(marker, selected) {
+    if (!marker) {
+      return;
     }
 
-    // Данных ещё нет — показываем скелетон ровно на время запроса.
-    const hasData = Array.isArray(monthly);
-    if (!hasData) {
+    const compact = map.getZoom() >= WELLHEAD_COMPACT_MIN_ZOOM;
+    const radius = compact ? WELLHEAD_RADIUS_COMPACT : WELLHEAD_RADIUS;
+
+    if (selected) {
+      marker.setStyle({
+        radius,
+        color: WELLHEAD_STROKE_COLOR,
+        weight: WELLHEAD_ACTIVE_WEIGHT,
+        fillColor: SELECTION_COLOR,
+        fillOpacity: SELECTION_FILL_OPACITY
+      });
+      return;
+    }
+
+    marker.setStyle({
+      radius,
+      color: WELLHEAD_STROKE_COLOR,
+      weight: compact ? WELLHEAD_IDLE_WEIGHT_COMPACT : WELLHEAD_IDLE_WEIGHT,
+      fillColor: WELLHEAD_FILL_COLOR,
+      fillOpacity: WELLHEAD_FILL_OPACITY
+    });
+  }
+
+  // Траектория выбранной скважины: бирюзовая линия на 1 px толще, забой — бирюзовый.
+  function styleTrajectory(entry, selected) {
+    const trajectory = entry === undefined || entry === null ? null : entry.trajectory;
+    if (!trajectory) {
+      return;
+    }
+
+    if (trajectory.core) {
+      trajectory.core.setStyle(selected
+        ? {
+            color: SELECTION_COLOR,
+            weight: TRAJECTORY_CORE_WEIGHT + SELECTION_LINE_WEIGHT_BONUS,
+            opacity: 1
+          }
+        : {
+            color: TRAJECTORY_COLOR,
+            weight: TRAJECTORY_CORE_WEIGHT,
+            opacity: TRAJECTORY_CORE_OPACITY
+          });
+    }
+
+    if (trajectory.edge) {
+      trajectory.edge.setStyle({ color: selected ? SELECTION_EDGE_COLOR : TRAJECTORY_EDGE_COLOR });
+    }
+
+    if (trajectory.bottom) {
+      trajectory.bottom.setStyle(selected
+        ? { color: SELECTION_COLOR, opacity: 1 }
+        : { color: BOTTOMHOLE_COLOR, opacity: BOTTOMHOLE_OPACITY });
+    }
+  }
+
+  function highlightWell(wellId, selected) {
+    const entry = wellLayers.get(wellId);
+    if (!entry) {
+      return;
+    }
+
+    styleWellhead(entry.marker, selected);
+    styleTrajectory(entry, selected);
+  }
+
+  // Единая точка входа для кликов по устью, линии, забою и по строке списка.
+  // Повторный клик по той же скважине снимает выбор.
+  function toggleWellSelection(well) {
+    if (dataPending) {
+      // Данные ещё скрыты вводным перелётом — невидимые слои выбирать нельзя.
+      return;
+    }
+
+    if (selectedWell !== null && selectedWell.wellId === well.wellId) {
+      clearSelection();
+      return;
+    }
+
+    selectWell(well);
+  }
+
+  // Крестик в шапке панели: снимает выбор и прячет панель до следующего выбора.
+  function clearSelection() {
+    if (selectedWell !== null) {
+      highlightWell(selectedWell.wellId, false);
+    }
+
+    selectedWell = null;
+    selectedMonthly = null;
+    selectionToken += 1;
+
+    disposeChart();
+    showPanelSkeleton(false);
+    clearSummary();
+    el('panel-error').hidden = true;
+    syncWellListSelection();
+    closePanel();
+  }
+
+  async function selectWell(well) {
+    if (selectedWell !== null) {
+      highlightWell(selectedWell.wellId, false);
+    }
+
+    selectedWell = well;
+    selectedMonthly = null;
+    // Подсветка не ждёт сети: выбор на карте виден сразу.
+    highlightWell(well.wellId, true);
+    syncWellListSelection();
+
+    const token = ++selectionToken;
+
+    if (isMonthlyLoaded(well.wellId)) {
+      el('panel-title').textContent = `${wellCaption(well)} — ${well.field}`;
+      el('panel-error').hidden = true;
+      openPanel();
+    } else {
       preparePanelLoading(well);
     }
 
     try {
-      const data = hasData
-        ? monthly
-        : await fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`);
-      selectedMonthly = data;
-      if (marker) {
-        marker.setPopupContent(popupHtml(well, data));
+      const monthly = await loadMonthly(well);
+      if (token !== selectionToken) {
+        return;
       }
-      await showChart(well, data);
+
+      selectedMonthly = monthly;
+      showSummary(well, monthly);
+      renderWellList();
+      await showChart(well, monthly);
     } catch (error) {
+      if (token !== selectionToken) {
+        return;
+      }
+
+      // Сводка полезна и без помесячных данных: месторождение, забой, длина ствола.
+      showSummary(well, null);
+      renderWellList();
       showPanelError(well, error);
     }
-  }
-
-  function onMarkerClick(well, marker) {
-    return selectWell(well, marker);
-  }
-
-  function hasOil(monthly) {
-    return Array.isArray(monthly) && monthly.some((month) => (month.oilVolSum ?? 0) > 0);
-  }
-
-  async function findProducingWell(located) {
-    for (const well of located) {
-      try {
-        const monthly = await fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`);
-        if (hasOil(monthly)) {
-          return { well, monthly };
-        }
-      } catch (error) {
-        console.warn(`Автовыбор: пропущена ${wellCaption(well)}`, error);
-      }
-    }
-
-    return null;
   }
 
   async function loadFieldTotalOil() {
@@ -339,15 +519,180 @@
     }
   }
 
-  async function autoSelectWell(located, markers) {
-    await loadFieldTotalOil();
+  function isMonthlyLoaded(wellId) {
+    return Array.isArray(monthlyByWell.get(wellId));
+  }
 
-    const found = await findProducingWell(located);
-    if (found === null) {
+  // Один запрос на скважину: предзагрузка списка и выбор делят его.
+  function loadMonthly(well) {
+    if (isMonthlyLoaded(well.wellId)) {
+      return Promise.resolve(monthlyByWell.get(well.wellId));
+    }
+
+    const pending = monthlyRequests.get(well.wellId);
+    if (pending !== undefined) {
+      return pending;
+    }
+
+    const request = fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`)
+      .then((monthly) => {
+        monthlyByWell.set(well.wellId, monthly);
+        monthlyRequests.delete(well.wellId);
+        return monthly;
+      })
+      .catch((error) => {
+        monthlyRequests.delete(well.wellId);
+        throw error;
+      });
+
+    monthlyRequests.set(well.wellId, request);
+    return request;
+  }
+
+  function wellOilText(wellId) {
+    const monthly = monthlyByWell.get(wellId);
+    if (!Array.isArray(monthly)) {
+      return '—';
+    }
+
+    return `${formatNumber(wellStats(monthly).oil)} м³`;
+  }
+
+  // Список всех скважин в панели. Устья куста лежат в пятне ~10 м и на доступных
+  // зумах физически не разлепляются — список даёт гарантированный доступ к каждой.
+  function renderWellList() {
+    const list = el('well-list');
+    if (list === null) {
       return;
     }
 
-    await selectWell(found.well, markers.get(found.well.wellId), found.monthly);
+    list.innerHTML = orderedWells.map((well) => {
+      const wellId = Number(well.wellId);
+      if (!Number.isInteger(wellId)) {
+        return '';
+      }
+
+      return `<li><button type="button" class="well-row" data-well-id="${wellId}" aria-pressed="false">` +
+        `<span class="well-row-name">${escapeHtml(well.name)}</span>` +
+        `<span class="well-row-value">${wellOilText(wellId)}</span>` +
+        `</button></li>`;
+    }).join('');
+
+    syncWellListSelection();
+  }
+
+  // Выбранная строка подсвечивается: состояние обновляем без перерисовки списка.
+  function syncWellListSelection() {
+    const list = el('well-list');
+    if (list === null || typeof list.querySelectorAll !== 'function') {
+      return;
+    }
+
+    const activeId = selectedWell === null ? null : String(selectedWell.wellId);
+    const rows = list.querySelectorAll('[data-well-id]');
+    for (const row of rows) {
+      const isActive = row.getAttribute('data-well-id') === activeId;
+      row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    }
+  }
+
+  function bindWellList() {
+    const list = el('well-list');
+    if (list === null || typeof list.addEventListener !== 'function') {
+      return;
+    }
+
+    list.addEventListener('click', (event) => {
+      const target = event.target;
+      const row = target !== null && target !== undefined && typeof target.closest === 'function'
+        ? target.closest('[data-well-id]')
+        : null;
+      if (row === null) {
+        return;
+      }
+
+      const well = wellsById.get(Number(row.getAttribute('data-well-id')));
+      if (well !== undefined) {
+        toggleWellSelection(well);
+      }
+    });
+  }
+
+  // Фоновая предзагрузка: показатель в списке и доля месторождения считаются сразу.
+  // Выбор скважины ждёт тот же промис, поэтому дублей запросов нет.
+  async function preloadMonthly(located) {
+    await loadFieldTotalOil();
+
+    // Суммарная добыча месторождения пришла позже выбора — обновляем долю в сводке.
+    if (selectedWell !== null && Array.isArray(selectedMonthly)) {
+      showSummary(selectedWell, selectedMonthly);
+    }
+
+    await Promise.all(located.map((well) =>
+      loadMonthly(well).catch((error) => {
+        console.warn(`Помесячные данные ${wellCaption(well)} не загружены`, error);
+      })));
+
+    renderWellList();
+  }
+
+  // Скважина с максимальной суммарной нефтью среди добывающих: нулевую добычу
+  // пропускаем (в списке есть, например, нагнетательная 15/9-F-4 с 0 м³),
+  // при равенстве берём первую по алфавиту.
+  function pickTopProducingWell(located) {
+    let best = null;
+    let bestOil = 0;
+
+    for (const well of located) {
+      const monthly = monthlyByWell.get(well.wellId);
+      if (!Array.isArray(monthly)) {
+        continue;
+      }
+
+      const oil = wellStats(monthly).oil;
+      if (!(oil > 0)) {
+        continue;
+      }
+
+      const better = best === null ||
+        oil > bestOil ||
+        (oil === bestOil && String(well.name) < String(best.name));
+
+      if (better) {
+        best = well;
+        bestOil = oil;
+      }
+    }
+
+    return best;
+  }
+
+  // Автовыбор после прилёта (или сразу после финального вида без полёта). Помесячные
+  // данные к этому моменту обычно уже загружены фоном; если нет — ждём их, чтобы
+  // панель не открылась пустой.
+  function requestAutoSelect(located) {
+    if (autoSelectDone) {
+      return;
+    }
+
+    autoSelectDone = true;
+    preloadPromise
+      .then(() => {
+        // Пользователь успел выбрать скважину сам — его выбор не перебиваем.
+        if (selectedWell !== null) {
+          return undefined;
+        }
+
+        const best = pickTopProducingWell(located);
+        if (best === null) {
+          return undefined;
+        }
+
+        return selectWell(best);
+      })
+      .catch((error) => {
+        console.warn('Автовыбор скважины не выполнен', error);
+      });
   }
   function toFiniteNumber(value) {
     if (value === null || value === undefined) {
@@ -397,19 +742,22 @@
     return valid.sort((a, b) => a.md - b.md);
   }
 
-  function buildTrajectoryLayer(points) {
+  function buildTrajectoryLayer(well, points) {
     if (points.length === 0) {
       return null;
     }
 
     const layer = L.layerGroup();
+    const trajectory = { core: null, edge: null, bottom: null };
+    // Все три объекта скважины выбирают её: устье, линия и забой.
+    const select = () => toggleWellSelection(well);
 
     if (points.length >= 2) {
       const latlngs = points.map((point) => point.latlng);
 
       // Тонкая тёмно-янтарная обводка: держит линию читаемой на светлых тайлах,
       // но, в отличие от прежнего glow, не расплывается грязным пятном.
-      L.polyline(latlngs, {
+      trajectory.edge = L.polyline(latlngs, {
         pane: TRAJECTORY_PANE,
         color: TRAJECTORY_EDGE_COLOR,
         weight: TRAJECTORY_EDGE_WEIGHT,
@@ -417,26 +765,46 @@
         interactive: false
       }).addTo(layer);
 
-      // Тонкая основная линия.
-      L.polyline(latlngs, {
+      // Тонкая основная линия — единственный интерактивный элемент линии:
+      // клик по широкой обводке выбирал бы скважину случайно.
+      trajectory.core = L.polyline(latlngs, {
         pane: TRAJECTORY_PANE,
         color: TRAJECTORY_COLOR,
         weight: TRAJECTORY_CORE_WEIGHT,
-        opacity: TRAJECTORY_CORE_OPACITY,
-        interactive: false
+        opacity: TRAJECTORY_CORE_OPACITY
       }).addTo(layer);
+      trajectory.core.on('click', select);
     }
 
-    // Забой — незалитый кружок в последней точке траектории (по MD).
-    L.circleMarker(points[points.length - 1].latlng, {
-      pane: TRAJECTORY_PANE,
+    // Забой — незалитый кружок в последней точке траектории (по MD) с подписью MD.
+    // Панель забоев ниже панели линий: при пересечении клик достаётся линии.
+    const last = points[points.length - 1];
+    trajectory.bottom = L.circleMarker(last.latlng, {
+      pane: BOTTOMHOLE_PANE,
       radius: BOTTOMHOLE_RADIUS,
       color: BOTTOMHOLE_COLOR,
       weight: BOTTOMHOLE_WEIGHT,
       opacity: BOTTOMHOLE_OPACITY,
-      fill: false,
-      interactive: false
+      fill: false
     }).addTo(layer);
+    trajectory.bottom.bindTooltip(bottomholeLabel(last.md), {
+      className: 'bottomhole-label',
+      direction: 'right',
+      permanent: true,
+      interactive: false,
+      opacity: 1,
+      offset: L.point(BOTTOMHOLE_LABEL_OFFSET_X, 0)
+    });
+    trajectory.bottom.on('click', select);
+
+    const entry = wellLayers.get(well.wellId) || { well, marker: null };
+    entry.trajectory = trajectory;
+    wellLayers.set(well.wellId, entry);
+
+    // Скважину могли выбрать до прихода траектории — подсветка применяется сразу.
+    if (selectedWell !== null && selectedWell.wellId === well.wellId) {
+      styleTrajectory(entry, true);
+    }
 
     return layer;
   }
@@ -446,7 +814,7 @@
   async function loadTrajectoryLayer(well) {
     try {
       const points = await fetchTrajectoryPoints(well);
-      return buildTrajectoryLayer(points);
+      return buildTrajectoryLayer(well, points);
     } catch (error) {
       console.warn(`Траектория ${wellCaption(well)} не добавлена`, error);
       return null;
@@ -455,6 +823,7 @@
 
   // Устье — янтарный круг с белой обводкой (соседние точки не сливаются в пятно).
   // Подпись — постоянный tooltip справа; показывается с зума WELL_LABEL_MIN_ZOOM.
+  // Клик по устью выбирает скважину — у маркера высший приоритет клика.
   function addWellheadMarker(well, labelOffsetY) {
     try {
       const latlng = safeLatLng(well.latitude, well.longitude);
@@ -463,14 +832,14 @@
         return null;
       }
 
+      const compact = map.getZoom() >= WELLHEAD_COMPACT_MIN_ZOOM;
       const marker = L.circleMarker(latlng, {
-        radius: WELLHEAD_RADIUS,
+        radius: compact ? WELLHEAD_RADIUS_COMPACT : WELLHEAD_RADIUS,
         color: WELLHEAD_STROKE_COLOR,
-        weight: WELLHEAD_IDLE_WEIGHT,
+        weight: compact ? WELLHEAD_IDLE_WEIGHT_COMPACT : WELLHEAD_IDLE_WEIGHT,
         fillColor: WELLHEAD_FILL_COLOR,
         fillOpacity: WELLHEAD_FILL_OPACITY
       });
-      marker.bindPopup(popupHtml(well, null));
       marker.bindTooltip(well.name, {
         className: 'well-label',
         direction: 'right',
@@ -479,7 +848,7 @@
         opacity: 1,
         offset: L.point(WELL_LABEL_OFFSET_X, labelOffsetY)
       });
-      marker.on('click', () => onMarkerClick(well, marker));
+      marker.on('click', () => toggleWellSelection(well));
       marker.addTo(map);
 
       return marker;
@@ -489,28 +858,45 @@
     }
   }
 
-  // Подписи устьев: постоянные tooltip'ы открыты только на зуме ≥ WELL_LABEL_MIN_ZOOM.
-  function syncWellLabels(markers) {
-    const show = map.getZoom() >= WELL_LABEL_MIN_ZOOM;
-    markers.forEach((marker) => {
-      if (show) {
-        marker.openTooltip();
+  // Зум меняет и подписи, и размер устьев: с 14 маркеры уменьшаются, иначе плотный
+  // куст сливается в одно пятно. Подписи устьев — с WELL_LABEL_MIN_ZOOM.
+  function syncZoomLayers() {
+    const showWellLabels = map.getZoom() >= WELL_LABEL_MIN_ZOOM;
+
+    wellLayers.forEach((entry) => {
+      const selected = selectedWell !== null && selectedWell.wellId === entry.well.wellId;
+      styleWellhead(entry.marker, selected);
+
+      if (!entry.marker) {
+        return;
+      }
+
+      if (showWellLabels) {
+        entry.marker.openTooltip();
       } else {
-        marker.closeTooltip();
+        entry.marker.closeTooltip();
       }
     });
+
+    syncBottomholeLabels();
   }
 
-  function highlightMarker(marker) {
-    if (selectedMarker && selectedMarker !== marker) {
-      selectedMarker.setStyle({ weight: WELLHEAD_IDLE_WEIGHT });
-    }
+  // Подписи забоев («забой, NNNN м») — с зума BOTTOMHOLE_LABEL_MIN_ZOOM.
+  function syncBottomholeLabels() {
+    const show = map.getZoom() >= BOTTOMHOLE_LABEL_MIN_ZOOM;
 
-    selectedMarker = marker;
+    wellLayers.forEach((entry) => {
+      const bottom = entry.trajectory ? entry.trajectory.bottom : null;
+      if (!bottom) {
+        return;
+      }
 
-    if (marker) {
-      marker.setStyle({ weight: WELLHEAD_ACTIVE_WEIGHT });
-    }
+      if (show) {
+        bottom.openTooltip();
+      } else {
+        bottom.closeTooltip();
+      }
+    });
   }
 
   function computeCluster(located) {
@@ -605,6 +991,8 @@
         } catch (error) {
           console.warn('Слой траектории не добавлен', error);
         }
+        // Подписи забоев открываются только у слоёв, уже стоящих на карте.
+        syncBottomholeLabels();
         index += 1;
       }
 
@@ -655,18 +1043,18 @@
       if (message) {
         console.warn(message, error);
       }
-      introInFlight = false;
       try {
         applyFinalView(located);
       } catch (viewError) {
         console.warn('Финальный вид карты не применён', viewError);
       }
+      revealMapData();
       drawTrajectoriesCascade(list);
+      requestAutoSelect(located);
     };
 
     try {
       tilesReady.then(() => {
-        introInFlight = true;
         try {
           flyToCluster(located);
 
@@ -677,7 +1065,6 @@
               return;
             }
             arrived = true;
-            introInFlight = false;
             // Гарантия: если перелёт по любой причине не доехал до финального зума
             // (прерван, троттлинг кадров, сбой анимации), сразу ставим финальный вид.
             // Когда валидных устьев нет, нейтральный вид уже выставлен — не дублируем.
@@ -688,8 +1075,11 @@
             } catch (error) {
               console.warn('Финальный вид не применён', error);
             }
-            openSelectedPopup();
+            // Прибыли: только теперь проявляем данные (fade-in ~400 мс из style.css),
+            // а затем автоматически выбираем самую добывающую скважину.
+            revealMapData();
             drawTrajectoriesCascade(list);
+            requestAutoSelect(located);
           };
 
           map.once('moveend', onArrived);
@@ -705,19 +1095,32 @@
     }
   }
 
-  // Попап выделенной скважины открывается после прибытия: во время перелёта autoPan
-  // прерывает flyTo (карта «застревает» и дрожит). Содержимое не сбрасываем —
-  // берём уже загруженные месячные данные, иначе в попапе снова окажется «—».
-  function openSelectedPopup() {
-    if (selectedWell === null || selectedMarker === null) {
+  // Пока на контейнере карты висит класс data-pending, панели слоёв прозрачны
+  // (см. style.css): с высоты космоса видна только карта, а не пятно из слитых
+  // маркеров. Класс ставится до добавления слоёв.
+  function hideMapData() {
+    dataPending = true;
+    const container = el('map');
+    if (container !== null && container.classList) {
+      container.classList.add(MAP_DATA_PENDING_CLASS);
+    }
+  }
+
+  // Снятие класса запускает CSS-переход opacity 400 мс — плавное проявление данных.
+  // Вызывается после прилёта, а при prefers-reduced-motion — сразу после финального вида.
+  function revealMapData() {
+    if (!dataPending) {
       return;
     }
-    try {
-      selectedMarker.setPopupContent(popupHtml(selectedWell, selectedMonthly));
-      selectedMarker.openPopup();
-    } catch (error) {
-      console.warn('Попап скважины не открыт', error);
+
+    dataPending = false;
+    const container = el('map');
+    if (container !== null && container.classList) {
+      container.classList.remove(MAP_DATA_PENDING_CLASS);
     }
+
+    // Подписи забоев открываем только у слоёв, которые уже на карте.
+    syncBottomholeLabels();
   }
 
   // Слой подписей мест: добавляется на карту только на зуме ≥ LABEL_MIN_ZOOM.
@@ -750,10 +1153,10 @@
   }
 
   function showLoadError(error) {
-    document.getElementById('panel-title').textContent = 'Ошибка загрузки';
-    document.getElementById('panel-error').textContent =
+    el('panel-title').textContent = 'Ошибка загрузки';
+    el('panel-error').textContent =
       'Не удалось загрузить скважины: ' + (error && error.message ? error.message : error);
-    document.getElementById('panel-error').hidden = false;
+    el('panel-error').hidden = false;
     showPanelSkeleton(false);
     openPanel();
   }
@@ -767,11 +1170,20 @@
 
     map = L.map('map');
     map.setView(INTRO_CENTER, INTRO_ZOOM);
+    // Данные скрыты до конца вводного полёта — ставим до добавления первого слоя.
+    hideMapData();
 
     map.createPane(TRAJECTORY_PANE);
     const pane = map.getPane(TRAJECTORY_PANE);
     if (pane) {
       pane.style.zIndex = TRAJECTORY_PANE_Z_INDEX;
+    }
+
+    // Панель забоев ниже траекторий: при пересечении клик достаётся линии.
+    map.createPane(BOTTOMHOLE_PANE);
+    const bottomPane = map.getPane(BOTTOMHOLE_PANE);
+    if (bottomPane) {
+      bottomPane.style.zIndex = BOTTOMHOLE_PANE_Z_INDEX;
     }
 
     map.createPane(LABEL_PANE);
@@ -790,7 +1202,6 @@
     const tilesReady = whenTilesReady(baseLayer, INTRO_TILE_WAIT_MS);
     createLabelLayer(map);
 
-    const markers = new Map();
     const located = [];
 
     let wells = [];
@@ -805,48 +1216,62 @@
     const list = Array.isArray(wells) ? wells : [];
 
     // Маркеры устьев добавляем сразу — они образуют «куст», к которому летит карта.
-    // Подписи идут колонкой вниз от куста: устья Volve лежат в пятне ~10 м (2–4 px на
-    // зуме 14), а попап раскрывается вверх — так подписи не перекрываются ни им, ни собой.
+    // Подписи идут колонкой вниз от куста: устья Volve лежат в пятне ~10 м (2–4 px
+    // на зуме 14), поэтому доступ к каждой скважине даёт список в панели.
     list.forEach((well, index) => {
       const marker = addWellheadMarker(well, index * WELL_LABEL_STEP_Y);
-      if (marker !== null) {
-        markers.set(well.wellId, marker);
-        located.push(well);
+      if (marker === null) {
+        return;
       }
+
+      wellLayers.set(well.wellId, { well, marker, trajectory: null });
+      wellsById.set(well.wellId, well);
+      located.push(well);
     });
+
+    // Список скважин: пункт выбирает скважину тем же механизмом, что клик по карте.
+    // Только скважины с валидными координатами: без устья на карте выбирать нечего.
+    orderedWells = located;
+    renderWellList();
+    bindWellList();
 
     if (loadError !== null || list.length === 0) {
       // Ошибка загрузки — без анимации: сразу финальный вид и сообщение об ошибке.
       applyFinalView(located);
+      revealMapData();
       showLoadError(loadError);
       return;
     }
 
-    // Подписи устьев включаются по зуму; обработчик вешаем до первого перелёта.
-    map.on('zoomend', () => syncWellLabels(markers));
-    syncWellLabels(markers);
+    // Фоновая предзагрузка помесячных данных: её ждут список, сводка и автовыбор.
+    // Стартует до ветвления по анимации — иначе автовыбор после прилёта мог бы
+    // сработать раньше самих данных и оставить панель пустой.
+    preloadPromise = preloadMonthly(located).catch((error) => {
+      console.warn('Помесячные данные не загружены', error);
+    });
+
+    // Подписи и размер маркеров зависят от зума; обработчик вешаем до первого перелёта.
+    map.on('zoomend', syncZoomLayers);
+    syncZoomLayers();
 
     if (prefersReducedMotion() || sessionStorage.getItem(INTRO_SESSION_KEY)) {
-      // Повторный визит в сессии или просьба «меньше движения» — сразу финальный вид.
+      // Повторный визит в сессии или просьба «меньше движения»: сразу финальный вид,
+      // данные проявляются тем же fade-in, но без полёта; автовыбор — сразу после этого.
       applyFinalView(located);
+      revealMapData();
       drawTrajectoriesCascade(list);
+      requestAutoSelect(located);
     } else {
       sessionStorage.setItem(INTRO_SESSION_KEY, '1');
       startIntro(tilesReady, located, list);
     }
-
-    try {
-      await autoSelectWell(located, markers);
-    } catch (error) {
-      console.warn('Автовыбор скважины не выполнен', error);
-    }
   }
 
   // Кнопка закрытия панели: без неё страница работает, поэтому отсутствие элемента
-  // в разметке не должно валить скрипт до инициализации карты.
+  // в разметке не должно валить скрипт до инициализации карты. Крестик снимает выбор.
   const panelClose = document.getElementById('panel-close');
   if (panelClose !== null) {
-    panelClose.addEventListener('click', closePanel);
+    panelClose.addEventListener('click', clearSelection);
   }
 
   // График в панели не пересчитывает размер сам — держим его равным контейнеру.

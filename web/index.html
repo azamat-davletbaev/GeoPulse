@@ -29,18 +29,31 @@
     </nav>
   </header>
 
-  <main id="map" aria-label="Карта скважин"></main>
+  <!-- Класс data-pending стоит в разметке: панели слоёв рождаются прозрачными
+       (без анимации «проявление → исчезновение»), а app.js снимает его после
+       вводного полёта — данные проявляются fade-in 400 мс (style.css). -->
+  <main id="map" class="data-pending" aria-label="Карта скважин"></main>
 
-  <aside id="panel" class="panel" aria-hidden="true">
+  <aside id="panel" class="panel" aria-hidden="true" aria-label="Скважина: график и сводка">
     <div class="panel-head">
       <h2 id="panel-title"></h2>
       <button id="panel-close" type="button" aria-label="Закрыть панель">&times;</button>
     </div>
-    <div class="panel-body">
-      <div id="chart" class="panel-chart"></div>
-      <div id="chart-skeleton" class="skeleton panel-chart-skeleton"></div>
+    <!-- Панель скроллится целиком: график, сводка и список скважин не влезают в экран. -->
+    <div class="panel-scroll">
+      <div class="panel-body">
+        <div id="chart" class="panel-chart"></div>
+        <div id="chart-skeleton" class="skeleton panel-chart-skeleton"></div>
+      </div>
+      <p id="panel-error" class="panel-error" hidden></p>
+      <!-- Сводка скважины: те же поля, что были в попапе Leaflet. -->
+      <section id="well-summary" class="well-summary" hidden></section>
+      <!-- Список всех скважин: устья куста не разлепляются на рабочих зумах. -->
+      <section class="panel-list-block">
+        <h3 class="panel-section-title">Скважины</h3>
+        <ul id="well-list" class="well-list"></ul>
+      </section>
     </div>
-    <p id="panel-error" class="panel-error" hidden></p>
   </aside>
 
   <script src="/vendor/leaflet/leaflet.js"></script>
