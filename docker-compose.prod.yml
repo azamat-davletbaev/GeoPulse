@@ -141,7 +141,7 @@ services:
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      ConnectionStrings__GeoPulse: Host=postgres;Port=5432;Database=${POSTGRES_DB:-geopulse_core};Username=${POSTGRES_USER:-geopulse};Password=${POSTGRES_PASSWORD}
+      ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-geopulse_core};Username=${POSTGRES_USER:-geopulse};Password=${POSTGRES_PASSWORD}
       ConnectionStrings__ClickHouse: Host=clickhouse;Port=8123;Database=${CLICKHOUSE_DB:-gp};Username=${CLICKHOUSE_USER:-geopulse};Password=${CLICKHOUSE_PASSWORD}
     mem_limit: 256m
     depends_on:

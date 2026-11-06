@@ -1,5 +1,5 @@
-using GeoPulse.Infrastructure;
-using GeoPulse.WebAPI.Models;
+using GeoPulse.WebAPI.Health;
+using GeoPulse.WebAPI.Models.Api;
 using Microsoft.AspNetCore.Mvc;
 
 namespace GeoPulse.WebAPI.Controllers
@@ -10,13 +10,13 @@ namespace GeoPulse.WebAPI.Controllers
     [Produces("application/json")]
     public class HealthController : ControllerBase
     {
-        private readonly CoreDbContext _db;
+        private readonly IDatabaseHealthProbe _database;
         private readonly ILogger<HealthController> _logger;
 
         /// <summary>Конструктор.</summary>
-        public HealthController(CoreDbContext db, ILogger<HealthController> logger)
+        public HealthController(IDatabaseHealthProbe database, ILogger<HealthController> logger)
         {
-            _db = db;
+            _database = database;
             _logger = logger;
         }
 
@@ -31,7 +31,7 @@ namespace GeoPulse.WebAPI.Controllers
 
             try
             {
-                databaseAvailable = await _db.Database.CanConnectAsync(cancellationToken);
+                databaseAvailable = await _database.CanConnectAsync(cancellationToken);
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {

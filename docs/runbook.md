@@ -204,6 +204,7 @@ curl -fsS https://<DOMAIN>/api/Analytics/summary
 | Что видно | Причина | Действие |
 | --- | --- | --- |
 | `wells` и `daily_production` пусты | ingestion ни разу не запускался | `docker compose -f docker-compose.prod.yml run --rm ingestion` (профиль `init`, в постоянный состав не входит) |
+| `geopulse-consumer` сразу `Exited`, в логах `ConsumeException: Subscribed topic not available` | в Kafka нет топика `production-daily`: подписка консьюмера топик не создаёт (KIP-361) | топик создаёт сам консьюмер при старте (ADR-015); если образ старый — `docker compose up -d --build consumer`, либо вручную: `kafka-topics.sh --bootstrap-server localhost:29092 --create --topic production-daily --partitions 1 --replication-factor 1 --if-not-exists` |
 | PostgreSQL заполнен, ClickHouse пуст | `chingest`/`aggregator` не работали или упали | `logs chingest`, `logs aggregator`, затем перезапустить оба |
 | `monthly_production` пуст, `production_daily` заполнен | агрегатор не успел отработать или упал | `logs aggregator`; он пересчитывает на старте и далее каждые 60 с |
 | `/api/Analytics/summary` отдаёт нули | агрегат пересчитан по пустым данным | проверить `select count() from gp.production_daily` |

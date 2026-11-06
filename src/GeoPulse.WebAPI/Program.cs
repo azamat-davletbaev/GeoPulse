@@ -1,6 +1,8 @@
 using System.Reflection;
 using GeoPulse.Infrastructure;
-using GeoPulse.WebAPI;
+using GeoPulse.WebAPI.Analytics;
+using GeoPulse.WebAPI.Health;
+using GeoPulse.WebAPI.Reports;
 using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -19,14 +21,23 @@ builder.Services.AddSwaggerGen(options =>
     }
 });
 
-// Единая регистрация CoreDbContext и репозиториев (тот же extension, что использует Ingestion.Service).
-var connectionString = builder.Configuration.GetConnectionString("GeoPulse")
+// Единая регистрация CoreDbContext и репозиториев (AddGeoPulseInfrastructure), как в Consumer.
+// Имя строки подключения общее для всех сервисов — DatabaseConfiguration.ConnectionStringName.
+var connectionString = builder.Configuration.GetConnectionString(DatabaseConfiguration.ConnectionStringName)
     ?? DatabaseConfiguration.DefaultConnectionString;
 
 builder.Services.AddGeoPulseInfrastructure(connectionString);
-builder.Services.AddSingleton<ClickHouseAnalyticsService>();
-builder.Services.AddSingleton<IMonthlyProductionReader>(sp => sp.GetRequiredService<ClickHouseAnalyticsService>());
-builder.Services.AddScoped<ReportService>();
+
+// Аналитика читается из ClickHouse; контроллер и отчёты работают через интерфейс-порт.
+builder.Services.AddSingleton<IMonthlyProductionReader, ClickHouseAnalyticsService>();
+
+// Отчёты: загрузка данных и два независимых генератора форматов.
+builder.Services.AddScoped<ReportDataLoader>();
+builder.Services.AddSingleton<XlsxReportWriter>();
+builder.Services.AddSingleton<CsvReportWriter>();
+
+// /health проверяет PostgreSQL через пробу, а не через DbContext напрямую.
+builder.Services.AddScoped<IDatabaseHealthProbe, DatabaseHealthProbe>();
 
 var app = builder.Build();
 

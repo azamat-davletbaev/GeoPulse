@@ -1,11 +1,15 @@
 using GeoPulse.Core.Geometry;
 using GeoPulse.Core.Repositories;
-using GeoPulse.WebAPI.Models;
+using GeoPulse.WebAPI.Models.Api;
 using Microsoft.AspNetCore.Mvc;
 
 namespace GeoPulse.WebAPI.Controllers
 {
-    /// <summary>Скважины и их суточная добыча — точечные данные из PostgreSQL.</summary>
+    /// <summary>
+    /// Скважины и их суточная добыча — точечные данные из PostgreSQL.
+    /// Все ресурсы скважины адресуются натуральным ключом npdWellBoreCode: он стабилен
+    /// при переимпорте, в отличие от identity-идентификатора wells.id.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     [Produces("application/json")]
@@ -38,25 +42,22 @@ namespace GeoPulse.WebAPI.Controllers
         }
 
         /// <summary>Траектория ствола: замеры (MD/TVD/инклинометрия) в WGS84 (конвертация из ED50/UTM31N на бэкенде).</summary>
-        /// <param name="wellId">Внутренний идентификатор скважины (wells.Id).</param>
+        /// <param name="npdWellBoreCode">Код ствола в НПД (натуральный ключ).</param>
         /// <param name="cancellationToken">Токен отмены.</param>
-        [HttpGet("{wellId:int}/trajectory")]
+        [HttpGet("{npdWellBoreCode:int}/trajectory")]
         [ProducesResponseType(typeof(IReadOnlyList<TrajectoryPointDto>), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult<IReadOnlyList<TrajectoryPointDto>>> GetTrajectory(
-            int wellId,
+            int npdWellBoreCode,
             CancellationToken cancellationToken)
         {
-            var well = await _wells.GetByIdAsync(wellId, cancellationToken);
+            var well = await _wells.GetByNpdWellBoreCodeAsync(npdWellBoreCode, cancellationToken);
             if (well is null)
             {
-                return Problem(
-                    title: "Скважина не найдена",
-                    detail: $"Скважина с id {wellId} отсутствует в базе.",
-                    statusCode: StatusCodes.Status404NotFound);
+                return WellNotFound(npdWellBoreCode);
             }
 
-            var points = await _trajectories.GetByWellIdAsync(wellId, cancellationToken);
+            var points = await _trajectories.GetByWellIdAsync(well.Id, cancellationToken);
 
             return Ok(points.Select(point =>
             {
@@ -79,7 +80,7 @@ namespace GeoPulse.WebAPI.Controllers
         [HttpGet("{npdWellBoreCode:int}")]
         [ProducesResponseType(typeof(WellDetailsDto), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-        public async Task<ActionResult<WellDetailsDto>> GetWell(
+        public async Task<ActionResult<WellDetailsDto>> GetWellDetails(
             int npdWellBoreCode,
             CancellationToken cancellationToken)
         {
@@ -90,7 +91,6 @@ namespace GeoPulse.WebAPI.Controllers
             }
 
             var coverage = await _production.GetCoverageAsync(well.Id, cancellationToken);
-
             return Ok(WellDetailsDto.FromModel(well, coverage));
         }
 
@@ -126,7 +126,7 @@ namespace GeoPulse.WebAPI.Controllers
             var page = await _production.GetPageAsync(well.Id, parameters.ToQuery(), cancellationToken);
             var items = page.Items.Select(ProductionRecordDto.FromModel).ToList();
 
-            return Ok(PagedResponse<ProductionRecordDto>.Create(items, page.TotalCount, page.Page, page.PageSize));
+            return Ok(PagedResponse<ProductionRecordDto>.From(page, items));
         }
 
         /// <summary>Суточная добыча скважины за конкретную дату.</summary>
@@ -167,4 +167,3 @@ namespace GeoPulse.WebAPI.Controllers
                 statusCode: StatusCodes.Status404NotFound);
     }
 }
-

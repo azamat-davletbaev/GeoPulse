@@ -13,6 +13,7 @@ WORKDIR /src
 # Копируем только csproj, чтобы слой restore кэшировался отдельно от исходников.
 COPY ["src/GeoPulse.WebAPI/GeoPulse.WebAPI.csproj", "src/GeoPulse.WebAPI/"]
 COPY ["src/GeoPulse.Infrastructure/GeoPulse.Infrastructure.csproj", "src/GeoPulse.Infrastructure/"]
+COPY ["src/GeoPulse.ClickHouse/GeoPulse.ClickHouse.csproj", "src/GeoPulse.ClickHouse/"]
 COPY ["src/GeoPulse.Core/GeoPulse.Core.csproj", "src/GeoPulse.Core/"]
 RUN dotnet restore "src/GeoPulse.WebAPI/GeoPulse.WebAPI.csproj"
 

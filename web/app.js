@@ -202,9 +202,10 @@
     return totalOil > 0 ? (oil / totalOil) * 100 : 0;
   }
 
+  // Отчёт по скважине адресуется кодом НПД — как и остальные ресурсы /api/wells.
   function reportUrl(well) {
-    const wellId = Number(well.wellId);
-    return Number.isInteger(wellId) && wellId > 0 ? `/api/Reports/wells/${wellId}.xlsx` : null;
+    const wellCode = Number(well.npdWellBoreCode);
+    return Number.isInteger(wellCode) && wellCode > 0 ? `/api/Reports/wells/${wellCode}.xlsx` : null;
   }
 
   // ------------------------------------------------------------------
@@ -753,9 +754,9 @@
     return [lat, lon];
   }
 
-  // Замеры приходят из /api/wells/{wellId}/trajectory уже в WGS84.
+  // Замеры приходят из /api/wells/{npdWellBoreCode}/trajectory уже в WGS84.
   async function fetchTrajectoryPoints(well) {
-    const points = await fetchJson(`/api/wells/${well.wellId}/trajectory`);
+    const points = await fetchJson(`/api/wells/${well.npdWellBoreCode}/trajectory`);
     if (!Array.isArray(points)) {
       return [];
     }

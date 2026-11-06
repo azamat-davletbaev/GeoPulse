@@ -10,9 +10,9 @@
 | `src/GeoPulse.Core/Events/*.cs` | поля событий, типы, версия схемы |
 | `src/GeoPulse.CHIngest/CHIngestService.cs`, `src/GeoPulse.Aggregator/AggregatorService.cs` | DDL ClickHouse: таблицы, движки, `ORDER BY` |
 | `src/GeoPulse.Ingestion.Service/IngestionService.cs`, `TrajectoryParser.cs` | какие колонки Excel и поля WITSML читаются |
-| `src/GeoPulse.WebAPI/ReportService.cs`, `web/app.js` | формулы обводнённости и доли |
+| `src/GeoPulse.WebAPI/Reports/ReportMetrics.cs`, `web/app.js` | формулы обводнённости и доли |
 | `sql/seed_well_locations.sql` | координаты устьев и датум |
-| `data/Volve_Production_data/license.txt`, `docs/volve-postgres-model.md` | лицензия и структура исходного набора |
+| `data/Volve_Production_data/license.txt` | лицензия исходного набора |
 
 ## 1. Предметная область
 
@@ -32,10 +32,10 @@
 
 ### 1.1 Обводнённость (WaterCut)
 
-Формула реализована дважды и совпадает: `ReportService.WaterCutPct` (сервер, отчёты XLSX/CSV) и `waterCutPct` в `web/app.js` (панель скважины):
+Формула реализована дважды и совпадает: `ReportMetrics.WaterCutPct` (сервер, отчёты XLSX/CSV) и `waterCutPct` в `web/app.js` (панель скважины):
 
 ```csharp
-// src/GeoPulse.WebAPI/ReportService.cs
+// src/GeoPulse.WebAPI/Reports/ReportMetrics.cs
 private static double WaterCutPct(double oil, double water)
 {
     var total = oil + water;
@@ -58,7 +58,7 @@ function waterCutPct(oil, water) {
 ### 1.2 Доля в добыче месторождения
 
 ```csharp
-// src/GeoPulse.WebAPI/ReportService.cs
+// src/GeoPulse.WebAPI/Reports/ReportMetrics.cs
 private static double SharePct(double oil, double totalOil)
 {
     return totalOil <= 0 ? 0 : oil / totalOil * 100;
@@ -144,21 +144,9 @@ PK (`well_id`, `md`) — на неё опирается `ON CONFLICT (well_id, m
 
 Апсертится (`ON CONFLICT (well_id) DO UPDATE`), поэтому переимпорт обновляет глубины забоя.
 
-### 2.6 `analytics.monthly_production` (миграция `20261102115807_AddMonthlyProductionAnalytics`)
-
-| Колонка | Тип | Ограничения |
-| --- | --- | --- |
-| `well_id` | `integer` | составной PK |
-| `year` | `integer` | составной PK |
-| `month` | `integer` | составной PK |
-| `oil_vol_sum`, `gas_vol_sum`, `water_vol_sum`, `water_injection_vol_sum`, `on_stream_hrs_sum` | `double precision` | NOT NULL |
-| `days_count` | `integer` | NOT NULL |
-
-Особенности: схема `analytics` создаётся миграцией (`EnsureSchema`), внешнего ключа на `wells` нет, EF-репозиторий `AnalyticsRepository` её читает, но **ни один контроллер его не использует** (аналитика идёт из ClickHouse). Таблица — замороженный снимок для сверок.
-
 ## 3. Схема ClickHouse
 
-База — `gp`. Все три таблицы создаются самими сервисами: DDL-константы `CHIngestService.CreateDatabaseSql` / `CreateWellsSql` / `CreateProductionDailySql` и `AggregatorService.EnsureSchemaAsync` выполняют `CREATE DATABASE IF NOT EXISTS gp` и `CREATE TABLE IF NOT EXISTS` при старте, поэтому отдельного DDL-файла в репозитории нет.
+База — `gp`. Все три таблицы создаются самими сервисами: `ClickHouseSchema` (`src/GeoPulse.ClickHouse/ClickHouseSchema.cs`) содержит DDL базы и таблиц, а `ClickHouseSchema.EnsureAsync` выполняет `CREATE DATABASE IF NOT EXISTS gp` и `CREATE TABLE IF NOT EXISTS` при старте CHIngest и Aggregator, поэтому отдельного DDL-файла в репозитории нет.
 
 ### 3.1 `gp.production_daily`
 
@@ -283,7 +271,7 @@ ENGINE = ReplacingMergeTree ORDER BY npd_well_bore_code
 
 Координаты устьев парсер **не** извлекает: они лежат готовым списком в `sql/seed_well_locations.sql` (7 скважин: коды 5693, 7405, 5351, 5599, 5769, 7078, 7289). Значения получены из заголовков WITSML-выгрузок (`Surface Latitude/Longitude`, `Surface EW/NS`, датум «European 1950 - Mean», зона 31N) и пересчитаны в WGS84 по EPSG:1613 «ED50 to WGS 84 (24)» — тем же преобразованием, что и `CoordinateTransform.Ed50Utm31ToWgs84`. Скрипт идемпотентен (`ON CONFLICT (well_id) DO UPDATE`).
 
-Траектории, наоборот, конвертируются «на лету»: в БД лежат ED50/UTM31N (`well_trajectories.easting/northing`), а `GET /api/wells/{wellId}/trajectory` отдаёт уже WGS84.
+Траектории, наоборот, конвертируются «на лету»: в БД лежат ED50/UTM31N (`well_trajectories.easting/northing`), а `GET /api/wells/{npdWellBoreCode}/trajectory` отдаёт уже WGS84.
 
 ## 6. Единицы измерения
 
@@ -298,11 +286,11 @@ ENGINE = ReplacingMergeTree ORDER BY npd_well_bore_code
 | MD, TVD, Easting, Northing | м | `TrajectoryPointDto`, `WellTrajectory` |
 | Зенитный угол, азимут | градусы | `TrajectoryPointDto` |
 | Широта/долгота | градусы WGS84 | `WellLocationEntity`, `TrajectoryPointDto` |
-| Обводнённость, доля в добыче | % | `ReportService.WaterCutPct`, `SharePct` |
+| Обводнённость, доля в добыче | % | `ReportMetrics.WaterCutPct`, `SharePct` |
 
 ## 7. Открытые вопросы
 
-1. **Количество строк и колонок Excel.** Оценка «15 634 строки данных, 24 колонки» взята из `docs/volve-postgres-model.md`, а число прочитанных строк подтверждено прогоном ingestion (в логе «Прочитано строк: 15634»). Парсер обращается к 19 колонкам (остальные — коды месторождения/объекта, `AVG_CHOKE_UOM`, `FLOW_KIND` и подобные — не используются). Точный перечень 24 колонок файла — [УТОЧНИТЬ].
+1. **Количество строк и колонок Excel.** Оценка «15 634 строки данных, 24 колонки» подтверждена прогоном ingestion (в логе «Прочитано строк: 15634»). Парсер обращается к 19 колонкам (остальные — коды месторождения/объекта, `AVG_CHOKE_UOM`, `FLOW_KIND` и подобные — не используются). Точный перечень 24 колонок файла — [УТОЧНИТЬ].
 2. **Сопоставление траекторий по имени каталога.** Работает, если имя каталога ствола совпадает с `NPD_WELL_BORE_NAME` после замены `/` → `_`. Для стволов, где имена расходятся, траектория не загрузится (в лог попадёт предупреждение). Полный список таких случаев — [УТОЧНИТЬ].
 3. **Тип скважины как мода.** При смешанных `WELL_TYPE` в строках одной скважины берётся самое частое значение; при равенстве порядок не определён (`OrderByDescending` без `ThenBy`). Корректно ли это для всех 7 стволов — [УТОЧНИТЬ].
 4. **Координаты устьев** — статический список на 7 скважин. При добавлении скважин сид-скрипт нужно дополнять вручную; автоматического извлечения `Surface Latitude/Longitude` в коде нет — [УТОЧНИТЬ], нужно ли.

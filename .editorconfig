@@ -1,0 +1,38 @@
+root = true
+
+# Базовые правила для всех файлов репозитория. Переносы строк не фиксируем:
+# их нормализует git (.gitattributes), а форсирование LF/CRLF ломает проверку dotnet format.
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 4
+
+# JSON/YAML/JS/HTML/CSS фронтенда и конфигов — отступ 2 пробела, как в существующих файлах.
+[*.{json,yml,yaml,js,css,html}]
+indent_size = 2
+
+[*.{sh,ps1}]
+indent_size = 4
+
+# Файлы, сгенерированные EF Core, сохраняют BOM: правки в них появляются только
+# повторной генерацией через dotnet ef, руками шапку не трогаем.
+[src/GeoPulse.Infrastructure/Migrations/*.cs]
+charset = utf-8-bom
+
+# C#: стиль, соответствующий коду репозитория (блочные namespace, 4 пробела, var для очевидных типов).
+[*.cs]
+indent_size = 4
+
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+csharp_style_namespace_declarations = block_scoped:suggestion
+csharp_style_var_for_built_in_types = false:silent
+csharp_style_var_when_type_is_apparent = true:silent
+csharp_style_var_elsewhere = false:silent
+csharp_using_directive_placement = outside_namespace:suggestion
+csharp_prefer_braces = true:silent
+
+# Неиспользуемые using — предупреждение, а не тишина: они появляются при рефакторинге.
+dotnet_diagnostic.IDE0005.severity = warning
+dotnet_diagnostic.IDE0007.severity = none
+dotnet_diagnostic.IDE0008.severity = none

@@ -7,6 +7,7 @@ namespace GeoPulse.Tests.Integration;
 /// Резолв npdWellBoreCode → well_id выполняется по кэшу из PostgreSQL, как в продовом коде.
 /// </summary>
 [Collection("integration")]
+[Trait("Category", "Integration")]
 public sealed class CHIngestIdempotencyTests
 {
     private readonly GeoPulseContainersFixture _fixture;
@@ -140,7 +141,12 @@ public sealed class CHIngestIdempotencyTests
             })
             .Build();
 
-        return new CHIngestService(config, NullLogger<CHIngestService>.Instance, dlqProducer);
+        // DLQ-публикатор и резолв well_id подключаются так же, как в Program.cs CHIngest.
+        var dlq = new DlqPublisher(dlqProducer, NullLogger<DlqPublisher>.Instance);
+        var wellIds = new WellIdCache(_fixture.PostgresConnectionString);
+        var topics = new TopicProvisioner(NullLogger<TopicProvisioner>.Instance);
+
+        return new CHIngestService(config, NullLogger<CHIngestService>.Instance, dlq, wellIds, topics);
     }
 
     private async Task InsertWellAsync(int npdCode)

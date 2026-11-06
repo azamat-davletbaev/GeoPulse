@@ -2,10 +2,10 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <RootNamespace>GeoPulse.WebAPI</RootNamespace>
-    <AssemblyName>GeoPulse.WebAPI</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>GeoPulse.WebAPI</RootNamespace>
+    <AssemblyName>GeoPulse.WebAPI</AssemblyName>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
@@ -26,6 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\GeoPulse.Core\GeoPulse.Core.csproj" />
     <ProjectReference Include="..\GeoPulse.Infrastructure\GeoPulse.Infrastructure.csproj" />
+    <ProjectReference Include="..\GeoPulse.ClickHouse\GeoPulse.ClickHouse.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,13 +1,14 @@
 using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using ClickHouse.Client.ADO;
 using Confluent.Kafka;
+using GeoPulse.ClickHouse;
 using GeoPulse.Core.Events;
+using GeoPulse.Core.Repositories;
+using GeoPulse.Messaging;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Npgsql;
 
 namespace GeoPulse.CHIngest
 {
@@ -15,56 +16,42 @@ namespace GeoPulse.CHIngest
     /// Второй читатель топика production-daily: пишет сырые данные в ClickHouse
     /// (база gp, таблицы wells и production_daily на движке ReplacingMergeTree).
     /// Дедупликация дубликатов топика — средствами ReplacingMergeTree (чтение через FINAL),
-    /// без дедупов в памяти. Резолв npdWellBoreCode → well_id — по PostgreSQL wells (кэш на старте).
+    /// без дедупов в памяти. Резолв npdWellBoreCode → well_id — по PostgreSQL wells (общий кэш).
     /// </summary>
     public sealed class CHIngestService : BackgroundService
     {
         private const string ConsumerGroup = "geopulse-chingest";
 
-        private const string CreateDatabaseSql = "CREATE DATABASE IF NOT EXISTS gp";
+        /// <summary>Пауза перед повтором после ошибки чтения из Kafka (топик не создан, брокер недоступен).</summary>
+        private const int ConsumeErrorDelayMs = 1_000;
 
-        private const string CreateWellsSql =
-            "CREATE TABLE IF NOT EXISTS gp.wells (" +
-            "npd_well_bore_code UInt32," +
-            "name String," +
-            "field String," +
-            "type String," +
-            "well_id UInt32" +
-            ") ENGINE = ReplacingMergeTree ORDER BY npd_well_bore_code";
-
-        private const string CreateProductionDailySql =
-            "CREATE TABLE IF NOT EXISTS gp.production_daily (" +
-            "well_id UInt32," +
-            "npd_well_bore_code UInt32," +
-            "date Date," +
-            "oil_vol Float64," +
-            "gas_vol Float64," +
-            "water_vol Float64," +
-            "water_injection_vol Float64," +
-            "on_stream_hrs Float64," +
-            "avg_downhole_pressure Float64," +
-            "avg_downhole_temperature Float64," +
-            "avg_dp_tubing Float64," +
-            "avg_annulus_pressure Float64," +
-            "avg_choke_size Float64," +
-            "avg_whp Float64," +
-            "avg_wht Float64," +
-            "dp_choke_size Float64" +
-            ") ENGINE = ReplacingMergeTree ORDER BY (npd_well_bore_code, date)";
+        /// <summary>DDL, который обеспечивает сам CHIngest (справочник и сырые суточные данные).</summary>
+        private static readonly string[] SchemaStatements =
+        {
+            ClickHouseSchema.CreateDatabaseSql,
+            ClickHouseSchema.CreateWellsSql,
+            ClickHouseSchema.CreateProductionDailySql
+        };
 
         private readonly IConfiguration _configuration;
         private readonly ILogger<CHIngestService> _logger;
-        private readonly IProducer<string, string> _dlqProducer;
+        private readonly DlqPublisher _dlq;
+        private readonly IWellIdResolver _wellIds;
+        private readonly TopicProvisioner _topics;
 
         /// <summary>Конструктор.</summary>
         public CHIngestService(
             IConfiguration configuration,
             ILogger<CHIngestService> logger,
-            IProducer<string, string> dlqProducer)
+            DlqPublisher dlq,
+            IWellIdResolver wellIds,
+            TopicProvisioner topics)
         {
             _configuration = configuration;
             _logger = logger;
-            _dlqProducer = dlqProducer;
+            _dlq = dlq;
+            _wellIds = wellIds;
+            _topics = topics;
         }
 
         /// <inheritdoc />
@@ -72,8 +59,6 @@ namespace GeoPulse.CHIngest
         {
             var clickHouseConnectionString = _configuration["ClickHouse:ConnectionString"]
                 ?? throw new InvalidOperationException("Не задан ClickHouse:ConnectionString в appsettings.json.");
-            var postgresConnectionString = _configuration.GetConnectionString("CoreDb")
-                ?? throw new InvalidOperationException("Не задана ConnectionStrings:CoreDb в appsettings.json.");
             var bootstrapServers = _configuration["Kafka:BootstrapServers"]
                 ?? throw new InvalidOperationException("Не задан Kafka:BootstrapServers в appsettings.json.");
             var topic = _configuration["Kafka:Topic"] ?? "production-daily";
@@ -84,17 +69,27 @@ namespace GeoPulse.CHIngest
                 batchSize = 500;
             }
 
-            await EnsureSchemaAsync(clickHouseConnectionString, stoppingToken);
+            await ClickHouseSchema.EnsureAsync(clickHouseConnectionString, SchemaStatements, stoppingToken);
 
-            var wellIdsByNpd = await LoadWellIdsAsync(postgresConnectionString, stoppingToken);
-            _logger.LogInformation("Кэш скважин загружен: {Count}", wellIdsByNpd.Count);
+            // Топик создаём явно: Kafka не создаёт его по подписке консьюмера (KIP-361).
+            var partitions = _configuration.GetValue("Kafka:TopicPartitions", 1);
+            var replicationFactor = _configuration.GetValue("Kafka:ReplicationFactor", 1);
+            await _topics.EnsureAsync(
+                bootstrapServers,
+                topic,
+                partitions <= 0 ? 1 : partitions,
+                (short)(replicationFactor <= 0 ? 1 : replicationFactor),
+                stoppingToken);
 
             var consumerConfig = new ConsumerConfig
             {
                 BootstrapServers = bootstrapServers,
                 GroupId = ConsumerGroup,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
-                EnableAutoCommit = false
+                EnableAutoCommit = false,
+                // Фолбэк для брокеров, где автосоздание по подписке действительно работает;
+                // основной путь — явное создание топика через TopicProvisioner (см. ADR-015).
+                AllowAutoCreateTopics = true
             };
 
             using var consumer = new ConsumerBuilder<string, string>(consumerConfig).Build();
@@ -109,7 +104,32 @@ namespace GeoPulse.CHIngest
             {
                 while (!stoppingToken.IsCancellationRequested)
                 {
-                    var result = consumer.Consume(TimeSpan.FromMilliseconds(250));
+                    ConsumeResult<string, string>? result;
+                    try
+                    {
+                        result = consumer.Consume(TimeSpan.FromMilliseconds(250));
+                    }
+                    catch (ConsumeException ex)
+                    {
+                        // Топик может быть ещё не создан: не роняем хост, ждём следующей попытки.
+                        _logger.LogWarning(
+                            "Ошибка чтения из топика {Topic}: {Reason}. Повтор через {DelayMs} мс",
+                            topic,
+                            ex.Error.Reason,
+                            ConsumeErrorDelayMs);
+
+                        try
+                        {
+                            await Task.Delay(ConsumeErrorDelayMs, stoppingToken);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
                     if (result is null)
                     {
                         await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
@@ -118,72 +138,71 @@ namespace GeoPulse.CHIngest
 
                     counters.Received++;
 
-                    var classification = Classify(result.Message.Value);
+                    var classification = EventClassifier.Classify(result.Message.Value);
 
                     switch (classification.Kind)
                     {
                         case MessageKind.Well:
-                        {
-                            await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
-
-                            var well = classification.Well!;
-                            var wellId = await ResolveWellIdAsync(
-                                postgresConnectionString, wellIdsByNpd, well.NpdWellBoreCode, stoppingToken);
-                            if (wellId is null)
-                            {
-                                await PublishDlqAsync(dlqTopic, result, DlqReasons.UnknownWell);
-                                counters.ToDlq++;
-                                consumer.Commit(result);
-                                break;
-                            }
-
-                            await InsertWellAsync(clickHouseConnectionString, well, wellId.Value, stoppingToken);
-                            counters.Wells++;
-                            consumer.Commit(result);
-                            break;
-                        }
-
-                        case MessageKind.Daily:
-                        {
-                            var daily = classification.Daily!;
-                            var wellId = await ResolveWellIdAsync(
-                                postgresConnectionString, wellIdsByNpd, daily.NpdWellBoreCode, stoppingToken);
-                            if (wellId is null)
-                            {
-                                await PublishDlqAsync(dlqTopic, result, DlqReasons.UnknownWell);
-                                counters.ToDlq++;
-                                consumer.Commit(result);
-                                break;
-                            }
-
-                            batch.Add(ToDailyRow(wellId.Value, daily));
-
-                            if (batch.Count >= batchSize)
                             {
                                 await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
+
+                                var well = classification.Well!;
+                                var wellId = await _wellIds.ResolveAsync(well.NpdWellBoreCode, stoppingToken);
+                                if (wellId is null)
+                                {
+                                    await _dlq.PublishAsync(dlqTopic, result, DlqReasons.UnknownWell, stoppingToken);
+                                    counters.ToDlq++;
+                                    consumer.Commit(result);
+                                    break;
+                                }
+
+                                await InsertWellAsync(clickHouseConnectionString, well, wellId.Value, stoppingToken);
+                                counters.Wells++;
+                                consumer.Commit(result);
+                                break;
                             }
 
-                            break;
-                        }
+                        case MessageKind.Daily:
+                            {
+                                var daily = classification.Daily!;
+                                var wellId = await _wellIds.ResolveAsync(daily.NpdWellBoreCode, stoppingToken);
+                                if (wellId is null)
+                                {
+                                    await _dlq.PublishAsync(dlqTopic, result, DlqReasons.UnknownWell, stoppingToken);
+                                    counters.ToDlq++;
+                                    consumer.Commit(result);
+                                    break;
+                                }
+
+                                batch.Add(ToDailyRow(wellId.Value, daily));
+
+                                if (batch.Count >= batchSize)
+                                {
+                                    await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
+                                }
+
+                                break;
+                            }
 
                         case MessageKind.Trajectory:
-                        {
-                            // Геометрия не пишется в ClickHouse (не таймсерия): сбрасываем батч добычи
-                            // и подтверждаем событие, не отправляя его в DLQ.
-                            await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
-                            consumer.Commit(result);
-                            break;
-                        }
+                            {
+                                // Геометрия не пишется в ClickHouse (не таймсерия): сбрасываем батч добычи
+                                // и подтверждаем событие, не отправляя его в DLQ.
+                                await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
+                                consumer.Commit(result);
+                                break;
+                            }
 
                         default:
-                        {
-                            await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
+                            {
+                                await FlushDailyBatchAsync(clickHouseConnectionString, batch, consumer, counters, stoppingToken);
 
-                            await PublishDlqAsync(dlqTopic, result, classification.Error ?? DlqReasons.InvalidEvent);
-                            counters.ToDlq++;
-                            consumer.Commit(result);
-                            break;
-                        }
+                                await _dlq.PublishAsync(
+                                    dlqTopic, result, classification.Error ?? DlqReasons.InvalidEvent, stoppingToken);
+                                counters.ToDlq++;
+                                consumer.Commit(result);
+                                break;
+                            }
                     }
                 }
             }
@@ -200,77 +219,12 @@ namespace GeoPulse.CHIngest
                     _logger.LogWarning(ex, "Ошибка при закрытии консьюмера");
                 }
 
-                _dlqProducer.Flush(TimeSpan.FromSeconds(10));
+                _dlq.Flush(TimeSpan.FromSeconds(10));
 
                 _logger.LogInformation(
                     "CHIngest завершён: получено {Received}, скважин {Wells}, записано {Inserted}, батчей {Batches}, в DLQ {Dlq}",
                     counters.Received, counters.Wells, counters.Inserted, counters.Batches, counters.ToDlq);
             }
-        }
-
-        /// <summary>Создаёт базу gp и таблицы wells / production_daily в ClickHouse.</summary>
-        private static async Task EnsureSchemaAsync(string connectionString, CancellationToken ct)
-        {
-            await using var connection = new ClickHouseConnection(connectionString);
-            await connection.OpenAsync(ct);
-            await using var command = connection.CreateCommand();
-
-            command.CommandText = CreateDatabaseSql;
-            await command.ExecuteNonQueryAsync(ct);
-
-            command.CommandText = CreateWellsSql;
-            await command.ExecuteNonQueryAsync(ct);
-
-            command.CommandText = CreateProductionDailySql;
-            await command.ExecuteNonQueryAsync(ct);
-        }
-
-        /// <summary>Загружает кэш npdWellBoreCode → well_id из PostgreSQL wells.</summary>
-        private static async Task<Dictionary<int, int>> LoadWellIdsAsync(string connectionString, CancellationToken ct)
-        {
-            var result = new Dictionary<int, int>();
-            await using var connection = new NpgsqlConnection(connectionString);
-            await connection.OpenAsync(ct);
-            await using var command = new NpgsqlCommand("SELECT npd_well_bore_code, id FROM wells", connection);
-            await using var reader = await command.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                result[reader.GetInt32(0)] = reader.GetInt32(1);
-            }
-
-            return result;
-        }
-
-        /// <summary>Резолвит well_id по натуральному ключу: кэш → точечный запрос в PostgreSQL.</summary>
-        private async Task<int?> ResolveWellIdAsync(
-            string connectionString,
-            Dictionary<int, int> cache,
-            int npdWellBoreCode,
-            CancellationToken ct)
-        {
-            if (cache.TryGetValue(npdWellBoreCode, out var cached))
-            {
-                return cached;
-            }
-
-            _logger.LogDebug("Промах кэша скважин: точечный запрос well_id для npdWellBoreCode={Code}", npdWellBoreCode);
-
-            await using var connection = new NpgsqlConnection(connectionString);
-            await connection.OpenAsync(ct);
-            await using var command = new NpgsqlCommand(
-                "SELECT id FROM wells WHERE npd_well_bore_code = @code", connection);
-            command.Parameters.AddWithValue("@code", npdWellBoreCode);
-
-            var result = await command.ExecuteScalarAsync(ct);
-            if (result is null || result is DBNull)
-            {
-                return null;
-            }
-
-            var wellId = Convert.ToInt32(result, CultureInfo.InvariantCulture);
-            cache[npdWellBoreCode] = wellId;
-            _logger.LogInformation("Кэш скважин догружен: npdWellBoreCode={Code} → well_id={WellId}", npdWellBoreCode, wellId);
-            return wellId;
         }
 
         /// <summary>Сбрасывает батч добычи одним INSERT-ом и коммитит офсеты всех партиций.</summary>
@@ -394,123 +348,6 @@ namespace GeoPulse.CHIngest
             DpChokeSize = data.DpChokeSize
         };
 
-        /// <summary>Отправляет оригинальное сообщение в DLQ-топик с причиной в заголовке.</summary>
-        private async Task PublishDlqAsync(string dlqTopic, ConsumeResult<string, string> result, string reason)
-        {
-            var message = new Message<string, string>
-            {
-                Key = result.Message.Key,
-                Value = result.Message.Value,
-                Headers = new Headers
-                {
-                    { "reason", Encoding.UTF8.GetBytes(reason) },
-                    { "source-topic", Encoding.UTF8.GetBytes(result.Topic) }
-                }
-            };
-
-            try
-            {
-                await _dlqProducer.ProduceAsync(dlqTopic, message);
-                _logger.LogInformation("DLQ: reason={Reason}, key={Key}", reason, result.Message.Key);
-            }
-            catch (ProduceException<string, string> ex)
-            {
-                _logger.LogError(ex, "Ошибка отправки в DLQ-топик {Topic}", dlqTopic);
-            }
-        }
-
-        private enum MessageKind
-        {
-            Well,
-            Daily,
-            Trajectory,
-            Invalid
-        }
-
-        private sealed record Classification(
-            MessageKind Kind,
-            WellRegisteredData? Well,
-            DailyProductionData? Daily,
-            TrajectoryData? Trajectory,
-            string? Error);
-
-        /// <summary>Разбирает сообщение: тип/версия схемы и данные события.</summary>
-        private static Classification Classify(string? raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.EmptyMessage);
-            }
-
-            EventHeader header;
-            try
-            {
-                header = JsonSerializer.Deserialize<EventHeader>(raw, MessagingJson.Options) ?? new EventHeader();
-            }
-            catch (JsonException)
-            {
-                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.Malformed);
-            }
-
-            if (header.SchemaVersion != EventTypes.SchemaVersion)
-            {
-                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownSchemaVersion);
-            }
-
-            switch (header.EventType)
-            {
-                case EventTypes.WellRegistered:
-                {
-                    try
-                    {
-                        var evt = JsonSerializer.Deserialize<WellRegisteredEvent>(raw, MessagingJson.Options);
-                        return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
-                            : new Classification(MessageKind.Well, evt.Data, null, null, null);
-                    }
-                    catch (JsonException)
-                    {
-                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableWellEvent);
-                    }
-                }
-
-                case EventTypes.ProductionDaily:
-                {
-                    try
-                    {
-                        var evt = JsonSerializer.Deserialize<DailyProductionEvent>(raw, MessagingJson.Options);
-                        return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
-                            : new Classification(MessageKind.Daily, null, evt.Data, null, null);
-                    }
-                    catch (JsonException)
-                    {
-                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableDailyEvent);
-                    }
-                }
-
-                case EventTypes.Trajectory:
-                {
-                    // Геометрия — не таймсерия: CHIngest распознаёт событие, но не пишет его в ClickHouse.
-                    try
-                    {
-                        var evt = JsonSerializer.Deserialize<TrajectoryEvent>(raw, MessagingJson.Options);
-                        return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
-                            : new Classification(MessageKind.Trajectory, null, null, evt.Data, null);
-                    }
-                    catch (JsonException)
-                    {
-                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableTrajectoryEvent);
-                    }
-                }
-
-                default:
-                    return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownEventTypeFor(header.EventType));
-            }
-        }
-
-        /// <summary>Счётчики обработки за один прогон CHIngest.</summary>
         private sealed class Counters
         {
             public long Received;

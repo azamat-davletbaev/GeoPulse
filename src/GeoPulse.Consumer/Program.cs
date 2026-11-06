@@ -1,6 +1,7 @@
 using Confluent.Kafka;
 using GeoPulse.Consumer;
 using GeoPulse.Infrastructure;
+using GeoPulse.Messaging;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -25,6 +26,12 @@ var bootstrapServers = builder.Configuration["Kafka:BootstrapServers"]
 // Один продюсер на DLQ: публикует оригинальные сообщения в production-daily-dlq.
 builder.Services.AddSingleton<IProducer<string, string>>(_ =>
     new ProducerBuilder<string, string>(new ProducerConfig { BootstrapServers = bootstrapServers }).Build());
+
+// Общая публикация в DLQ (формат заголовков reason/source-topic одинаков для всех консьюмеров).
+builder.Services.AddSingleton<DlqPublisher>();
+
+// Создание топика при старте: иначе подписка падает, пока ingestion не опубликует первое событие.
+builder.Services.AddSingleton<TopicProvisioner>();
 
 builder.Services.AddHostedService<ProductionConsumerService>();
 

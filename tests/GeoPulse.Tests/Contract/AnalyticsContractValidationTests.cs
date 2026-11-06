@@ -5,20 +5,12 @@ namespace GeoPulse.Tests.Contract;
 
 /// <summary>
 /// Контрактные тесты /api/Analytics/monthly (валидация 400/404) через реальный HTTP-пайплайн
-/// и чистые DTO-контракты (поля не изменились). ClickHouseAnalyticsService в путях валидации
-/// не вызывается, поэтому используется dummy-инстанс.
+/// и чистые DTO-контракты (поля не изменились). Читатель аналитики в путях валидации
+/// не вызывается, поэтому достаточно пустой подмены IMonthlyProductionReader.
 /// </summary>
 public sealed class AnalyticsContractValidationTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
-
-    private static ClickHouseAnalyticsService DummyAnalytics() =>
-        new(new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:ClickHouse"] = "Host=localhost;Port=8123"
-            })
-            .Build());
 
     [Fact]
     public async Task Monthly_WithoutWellIdOrCode_Returns400()
@@ -26,7 +18,7 @@ public sealed class AnalyticsContractValidationTests
         var (app, client) = await ApiTestHost.StartAsync(services =>
         {
             services.AddSingleton<IWellRepository>(new FakeWellRepository());
-            services.AddSingleton(DummyAnalytics());
+            services.AddSingleton<IMonthlyProductionReader>(new FakeMonthlyProductionReader());
         });
 
         try
@@ -46,7 +38,7 @@ public sealed class AnalyticsContractValidationTests
         var (app, client) = await ApiTestHost.StartAsync(services =>
         {
             services.AddSingleton<IWellRepository>(new FakeWellRepository());
-            services.AddSingleton(DummyAnalytics());
+            services.AddSingleton<IMonthlyProductionReader>(new FakeMonthlyProductionReader());
         });
 
         try

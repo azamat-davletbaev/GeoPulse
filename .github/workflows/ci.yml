@@ -25,8 +25,17 @@ jobs:
       - name: Restore
         run: dotnet restore GeoPulse.slnx
 
+      - name: Verify code style
+        # Стиль зафиксирован в .editorconfig; сборка не падает на предупреждениях,
+        # поэтому соответствие проверяется отдельным шагом.
+        run: dotnet format GeoPulse.slnx --verify-no-changes --no-restore
+
       - name: Build
         run: dotnet build GeoPulse.slnx -c Release --no-restore
+
+      - name: Verify EF model matches migrations
+        # Ловит ситуацию «модель поменяли, миграцию не добавили» (Consumer применяет миграции на старте).
+        run: dotnet tool restore && dotnet ef migrations has-pending-model-changes --project src/GeoPulse.Infrastructure
 
       - name: Test
         run: dotnet test tests/GeoPulse.Tests/GeoPulse.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx"

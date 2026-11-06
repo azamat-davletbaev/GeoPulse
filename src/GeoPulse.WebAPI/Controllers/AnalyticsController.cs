@@ -1,21 +1,21 @@
-using GeoPulse.Core.Models;
 using GeoPulse.Core.Repositories;
-using GeoPulse.WebAPI.Models;
+using GeoPulse.WebAPI.Analytics;
+using GeoPulse.WebAPI.Models.Api;
 using Microsoft.AspNetCore.Mvc;
 
 namespace GeoPulse.WebAPI.Controllers
 {
-    /// <summary>Помесячная аналитика добычи (ClickHouse gp.monthly_production; Postgres-схема analytics заморожена).</summary>
+    /// <summary>Помесячная аналитика добычи (источник — ClickHouse gp.monthly_production).</summary>
     [ApiController]
     [Route("api/[controller]")]
     [Produces("application/json")]
     public class AnalyticsController : ControllerBase
     {
         private readonly IWellRepository _wells;
-        private readonly ClickHouseAnalyticsService _analytics;
+        private readonly IMonthlyProductionReader _analytics;
 
         /// <summary>Конструктор.</summary>
-        public AnalyticsController(IWellRepository wells, ClickHouseAnalyticsService analytics)
+        public AnalyticsController(IWellRepository wells, IMonthlyProductionReader analytics)
         {
             _wells = wells;
             _analytics = analytics;
@@ -34,38 +34,29 @@ namespace GeoPulse.WebAPI.Controllers
             [FromQuery] int? wellCode,
             CancellationToken cancellationToken)
         {
-            Well? well;
-            if (wellId.HasValue)
+            var well = wellId.HasValue
+                ? await _wells.GetByIdAsync(wellId.Value, cancellationToken)
+                : wellCode.HasValue
+                    ? await _wells.GetByNpdWellBoreCodeAsync(wellCode.Value, cancellationToken)
+                    : null;
+
+            if (well is null)
             {
-                well = await _wells.GetByIdAsync(wellId.Value, cancellationToken);
-                if (well is null)
+                if (!wellId.HasValue && !wellCode.HasValue)
                 {
-                    return Problem(
-                        title: "Скважина не найдена",
-                        detail: $"Скважина с id {wellId.Value} отсутствует в базе.",
-                        statusCode: StatusCodes.Status404NotFound);
+                    ModelState.AddModelError("wellId", "Укажите wellId или wellCode.");
+                    return ValidationProblem(ModelState);
                 }
-            }
-            else if (wellCode.HasValue)
-            {
-                well = await _wells.GetByNpdWellBoreCodeAsync(wellCode.Value, cancellationToken);
-                if (well is null)
-                {
-                    return Problem(
-                        title: "Скважина не найдена",
-                        detail: $"Скважина с кодом НПД {wellCode.Value} отсутствует в базе.",
-                        statusCode: StatusCodes.Status404NotFound);
-                }
-            }
-            else
-            {
-                ModelState.AddModelError("wellId", "Укажите wellId или wellCode.");
-                return ValidationProblem(ModelState);
+
+                return Problem(
+                    title: "Скважина не найдена",
+                    detail: $"Скважина с {(wellId.HasValue ? $"id {wellId.Value}" : $"кодом НПД {wellCode!.Value}")} отсутствует в базе.",
+                    statusCode: StatusCodes.Status404NotFound);
             }
 
             var rows = await _analytics.GetMonthlyByWellAsync(well.Id, cancellationToken);
 
-            return Ok(rows);
+            return Ok(rows.Select(MonthlyProductionDto.FromModel).ToList());
         }
 
         /// <summary>Суммарная добыча по всем скважинам за всё время (один SQL-запрос).</summary>
@@ -74,7 +65,9 @@ namespace GeoPulse.WebAPI.Controllers
         [ProducesResponseType(typeof(ProductionSummaryDto), StatusCodes.Status200OK)]
         public async Task<ActionResult<ProductionSummaryDto>> GetSummary(CancellationToken cancellationToken)
         {
-            return Ok(await _analytics.GetSummaryAsync(cancellationToken));
+            var summary = await _analytics.GetSummaryAsync(cancellationToken);
+
+            return Ok(ProductionSummaryDto.FromModel(summary));
         }
     }
 }

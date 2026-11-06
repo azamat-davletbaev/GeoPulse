@@ -6,29 +6,33 @@ namespace GeoPulse.Tests.Contract;
 /// Контрактные тесты GET /api/Reports/*: тип контента, Content-Disposition=attachment,
 /// корректное имя файла с расширением. Проверяются через реальный HTTP-пайплайн (TestServer)
 /// с in-memory подменами, без обращения к ClickHouse и PostgreSQL.
+/// Скважина адресуется кодом НПД — так же, как остальные ресурсы /api/wells.
 /// </summary>
 public sealed class ReportsContractTests
 {
-    private static ReportService CreateReportService() =>
-        new(
+    private const int KnownWellCode = 5351;
+
+    private static void RegisterReports(IServiceCollection services)
+    {
+        services.AddScoped(_ => new ReportDataLoader(
             new FakeWellRepository(new[]
             {
-                new Well { Id = 1, NpdWellBoreCode = 5351, Name = "W", Field = "Volve", Type = "OP" }
+                new Well { Id = 1, NpdWellBoreCode = KnownWellCode, Name = "W", Field = "Volve", Type = "OP" }
             }),
             new FakeMonthlyProductionReader(
                 new[]
                 {
-                    new MonthlyProductionFlatDto { WellId = 1, Year = 2016, Month = 1, OilVolSum = 100, WaterVolSum = 10 }
+                    new MonthlyProduction { WellId = 1, Year = 2016, Month = 1, OilVolSum = 100, WaterVolSum = 10 }
                 },
-                new ProductionSummaryDto { TotalOilVol = 100, TotalWaterVol = 10 }));
+                new ProductionSummary { TotalOilVol = 100, TotalWaterVol = 10 })));
+        services.AddSingleton(new XlsxReportWriter());
+        services.AddSingleton(new CsvReportWriter());
+    }
 
     [Fact]
     public async Task MonthlyXlsx_ReturnsSpreadsheetContentType_AndAttachmentFilename()
     {
-        var (app, client) = await ApiTestHost.StartAsync(services =>
-        {
-            services.AddSingleton(CreateReportService());
-        });
+        var (app, client) = await ApiTestHost.StartAsync(RegisterReports);
 
         try
         {
@@ -56,10 +60,7 @@ public sealed class ReportsContractTests
     [Fact]
     public async Task MonthlyCsv_ReturnsTextCsv_AndAttachmentFilename()
     {
-        var (app, client) = await ApiTestHost.StartAsync(services =>
-        {
-            services.AddSingleton(CreateReportService());
-        });
+        var (app, client) = await ApiTestHost.StartAsync(RegisterReports);
 
         try
         {
@@ -83,16 +84,13 @@ public sealed class ReportsContractTests
     }
 
     [Fact]
-    public async Task WellXlsx_ReturnsSpreadsheetContentType_AndAttachmentFilenameWithWellId()
+    public async Task WellXlsx_ReturnsSpreadsheetContentType_AndAttachmentFilenameWithWellCode()
     {
-        var (app, client) = await ApiTestHost.StartAsync(services =>
-        {
-            services.AddSingleton(CreateReportService());
-        });
+        var (app, client) = await ApiTestHost.StartAsync(RegisterReports);
 
         try
         {
-            var response = await client.GetAsync("/api/Reports/wells/1.xlsx");
+            var response = await client.GetAsync($"/api/Reports/wells/{KnownWellCode}.xlsx");
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Equal(
@@ -105,7 +103,7 @@ public sealed class ReportsContractTests
 
             var fileName = disposition.FileNameStar ?? disposition.FileName;
             Assert.NotNull(fileName);
-            Assert.StartsWith("well_1_", fileName);
+            Assert.StartsWith($"well_{KnownWellCode}_", fileName);
             Assert.EndsWith(".xlsx", fileName);
 
             // Тело — настоящий xlsx (ZIP-контейнер), а не пустая заглушка.
@@ -123,14 +121,11 @@ public sealed class ReportsContractTests
     [Fact]
     public async Task WellXlsx_UnknownWell_Returns404()
     {
-        var (app, client) = await ApiTestHost.StartAsync(services =>
-        {
-            services.AddSingleton(CreateReportService());
-        });
+        var (app, client) = await ApiTestHost.StartAsync(RegisterReports);
 
         try
         {
-            var response = await client.GetAsync("/api/Reports/wells/999.xlsx");
+            var response = await client.GetAsync("/api/Reports/wells/999999.xlsx");
 
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 

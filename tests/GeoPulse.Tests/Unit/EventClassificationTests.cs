@@ -3,27 +3,13 @@ using System.Text.Json;
 namespace GeoPulse.Tests.Unit;
 
 /// <summary>
-/// Юнит-тесты классификации входящих сообщений (private static Classify в Consumer и CHIngest).
+/// Юнит-тесты общего разборщика сообщений <see cref="EventClassifier"/> (используется и Consumer,
+/// и CHIngest — до выноса в GeoPulse.Messaging логика дублировалась в обоих сервисах).
 /// Проверяют, что битый JSON, неизвестный eventType и несовпадающий schemaVersion превращаются
-/// в маршрут отбраковки (kind=Invalid + reason), а не исключение наверх.
+/// в маршрут отбраковки (Kind=Invalid + reason), а не в исключение наверх.
 /// </summary>
 public sealed class EventClassificationTests
 {
-    public static IEnumerable<object[]> ServiceTypes => new[]
-    {
-        new object[] { typeof(ProductionConsumerService) },
-        new object[] { typeof(CHIngestService) },
-    };
-
-    private static object Classify(Type serviceType, string? raw) =>
-        ReflectionHelper.InvokePrivateStatic(serviceType, "Classify", raw!);
-
-    private static string Kind(object result) =>
-        (string)ReflectionHelper.GetProperty(result, "Kind")!.ToString()!;
-
-    private static string? Error(object result) =>
-        (string?)ReflectionHelper.GetProperty(result, "Error");
-
     private static string DailyJson(int npdWellBoreCode = 5351, double? oilVol = 100.5) =>
         JsonSerializer.Serialize(
             new DailyProductionEvent
@@ -71,122 +57,130 @@ public sealed class EventClassificationTests
             MessagingJson.Options);
 
     [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_NullOrWhitespace_ReturnsEmptyMessage(Type serviceType)
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Classify_EmptyOrWhitespace_ReturnsEmptyMessage(string? raw)
     {
-        Assert.Equal(DlqReasons.EmptyMessage, Error(Classify(serviceType, null)));
-        Assert.Equal(DlqReasons.EmptyMessage, Error(Classify(serviceType, string.Empty)));
-        Assert.Equal(DlqReasons.EmptyMessage, Error(Classify(serviceType, "   ")));
+        var result = EventClassifier.Classify(raw);
+
+        Assert.Equal(MessageKind.Invalid, result.Kind);
+        Assert.Equal(DlqReasons.EmptyMessage, result.Error);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_BrokenJson_ReturnsUnparseableJson(Type serviceType)
+    [Fact]
+    public void Classify_BrokenJson_ReturnsUnparseableJson()
     {
-        var result = Classify(serviceType, "{not-valid-json");
+        var result = EventClassifier.Classify("{not-valid-json");
 
-        Assert.Equal("Invalid", Kind(result));
-        Assert.Equal(DlqReasons.Malformed, Error(result));
+        Assert.Equal(MessageKind.Invalid, result.Kind);
+        Assert.Equal(DlqReasons.Malformed, result.Error);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_UnknownSchemaVersion_ReturnsUnknownSchemaVersion(Type serviceType)
+    [Fact]
+    public void Classify_UnknownSchemaVersion_ReturnsReason()
     {
-        var result = Classify(serviceType, "{\"eventType\":\"production.daily\",\"schemaVersion\":2}");
+        var result = EventClassifier.Classify("{\"eventType\":\"production.daily\",\"schemaVersion\":2}");
 
-        Assert.Equal("Invalid", Kind(result));
-        Assert.Equal(DlqReasons.UnknownSchemaVersion, Error(result));
+        Assert.Equal(MessageKind.Invalid, result.Kind);
+        Assert.Equal(DlqReasons.UnknownSchemaVersion, result.Error);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_UnknownEventType_ReturnsUnknownEventType(Type serviceType)
+    [Fact]
+    public void Classify_UnknownEventType_ReturnsUnknownEventType()
     {
-        var result = Classify(serviceType, "{\"eventType\":\"foo.bar\",\"schemaVersion\":1}");
+        var result = EventClassifier.Classify("{\"eventType\":\"foo.bar\",\"schemaVersion\":1}");
 
-        Assert.Equal("Invalid", Kind(result));
-        Assert.Equal(DlqReasons.UnknownEventTypeFor("foo.bar"), Error(result));
+        Assert.Equal(MessageKind.Invalid, result.Kind);
+        Assert.Equal(DlqReasons.UnknownEventTypeFor("foo.bar"), result.Error);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_ExplicitNullData_ReturnsMissingData(Type serviceType)
+    [Fact]
+    public void Classify_ExplicitNullData_ReturnsMissingData()
     {
-        var result = Classify(serviceType, "{\"eventType\":\"production.daily\",\"schemaVersion\":1,\"data\":null}");
+        var result = EventClassifier.Classify("{\"eventType\":\"production.daily\",\"schemaVersion\":1,\"data\":null}");
 
-        Assert.Equal("Invalid", Kind(result));
-        Assert.Equal(DlqReasons.MissingData, Error(result));
+        Assert.Equal(MessageKind.Invalid, result.Kind);
+        Assert.Equal(DlqReasons.MissingData, result.Error);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_OmittedData_YieldsDailyWithEmptyData(Type serviceType)
+    [Fact]
+    public void Classify_OmittedData_YieldsDailyWithEmptyData()
     {
         // Фактическое поведение: свойство Data имеет инициализатор = new(), поэтому отсутствие
         // поля data даёт пустой объект (NpdWellBoreCode=0), а не null. Такой «пустой» daily
         // далее уходит в DLQ как unknown well (неизвестный код 0), а не как missing.data.
-        var result = Classify(serviceType, "{\"eventType\":\"production.daily\",\"schemaVersion\":1}");
+        var result = EventClassifier.Classify("{\"eventType\":\"production.daily\",\"schemaVersion\":1}");
 
-        Assert.Equal("Daily", Kind(result));
-        Assert.Null(Error(result));
-
-        var daily = (DailyProductionData)ReflectionHelper.GetProperty(result, "Daily")!;
-        Assert.Equal(0, daily.NpdWellBoreCode);
+        Assert.Equal(MessageKind.Daily, result.Kind);
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Daily);
+        Assert.Equal(0, result.Daily!.NpdWellBoreCode);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_ValidDaily_ReturnsDailyKindWithData(Type serviceType)
+    [Fact]
+    public void Classify_ValidDaily_ReturnsDailyKindWithData()
     {
-        var result = Classify(serviceType, DailyJson(npdWellBoreCode: 5351, oilVol: 100.5));
+        var result = EventClassifier.Classify(DailyJson(npdWellBoreCode: 5351, oilVol: 100.5));
 
-        Assert.Equal("Daily", Kind(result));
-        Assert.Null(Error(result));
-
-        var daily = (DailyProductionData)ReflectionHelper.GetProperty(result, "Daily")!;
-        Assert.Equal(5351, daily.NpdWellBoreCode);
-        Assert.Equal(new DateOnly(2016, 1, 1), daily.Date);
-        Assert.Equal(100.5, daily.OilVol);
+        Assert.Equal(MessageKind.Daily, result.Kind);
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Daily);
+        Assert.Equal(5351, result.Daily!.NpdWellBoreCode);
+        Assert.Equal(new DateOnly(2016, 1, 1), result.Daily.Date);
+        Assert.Equal(100.5, result.Daily.OilVol);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_ValidWell_ReturnsWellKindWithData(Type serviceType)
+    [Fact]
+    public void Classify_ValidWell_ReturnsWellKindWithData()
     {
-        var result = Classify(serviceType, WellJson(5351));
+        var result = EventClassifier.Classify(WellJson(5351));
 
-        Assert.Equal("Well", Kind(result));
-        Assert.Null(Error(result));
-
-        var well = (WellRegisteredData)ReflectionHelper.GetProperty(result, "Well")!;
-        Assert.Equal(5351, well.NpdWellBoreCode);
-        Assert.Equal("W", well.Name);
+        Assert.Equal(MessageKind.Well, result.Kind);
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Well);
+        Assert.Equal(5351, result.Well!.NpdWellBoreCode);
+        Assert.Equal("W", result.Well.Name);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_ValidTrajectory_ReturnsTrajectoryKindWithData(Type serviceType)
+    [Fact]
+    public void Classify_ValidTrajectory_ReturnsTrajectoryKindWithData()
     {
-        var result = Classify(serviceType, TrajectoryJson(5351));
+        var result = EventClassifier.Classify(TrajectoryJson(5351));
 
-        Assert.Equal("Trajectory", Kind(result));
-        Assert.Null(Error(result));
-
-        var trajectory = (TrajectoryData)ReflectionHelper.GetProperty(result, "Trajectory")!;
-        Assert.Equal(5351, trajectory.NpdWellBoreCode);
-        Assert.Equal(3510.00, trajectory.TdMd);
-        Assert.Equal(3138.06, trajectory.TdTvd);
-        Assert.Single(trajectory.Points);
+        Assert.Equal(MessageKind.Trajectory, result.Kind);
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Trajectory);
+        Assert.Equal(5351, result.Trajectory!.NpdWellBoreCode);
+        Assert.Equal(3510.00, result.Trajectory.TdMd);
+        Assert.Equal(3138.06, result.Trajectory.TdTvd);
+        Assert.Single(result.Trajectory.Points);
     }
 
-    [Theory]
-    [MemberData(nameof(ServiceTypes))]
-    public void Classify_DailyWithWrongDataShape_ReturnsUnparseableDailyEvent(Type serviceType)
+    [Fact]
+    public void Classify_DailyWithWrongDataShape_ReturnsUnparseableDailyEvent()
     {
-        var result = Classify(serviceType, "{\"eventType\":\"production.daily\",\"schemaVersion\":1,\"data\":123}");
+        var result = EventClassifier.Classify("{\"eventType\":\"production.daily\",\"schemaVersion\":1,\"data\":123}");
 
-        Assert.Equal("Invalid", Kind(result));
-        Assert.Equal(DlqReasons.UnparseableDailyEvent, Error(result));
+        Assert.Equal(MessageKind.Invalid, result.Kind);
+        Assert.Equal(DlqReasons.UnparseableDailyEvent, result.Error);
+    }
+
+    [Fact]
+    public void EventTypeOf_ReturnsEventTypeFromEnvelope()
+    {
+        Assert.Equal(EventTypes.ProductionDaily, EventClassifier.EventTypeOf(DailyJson()));
+    }
+
+    [Fact]
+    public void EventTypeOf_BrokenJson_ReturnsUnparseable()
+    {
+        Assert.Equal("unparseable", EventClassifier.EventTypeOf("{not-valid-json"));
+    }
+
+    [Fact]
+    public void EventTypeOf_NoEventType_ReturnsUnknown()
+    {
+        Assert.Equal("unknown", EventClassifier.EventTypeOf("{\"schemaVersion\":1}"));
     }
 }

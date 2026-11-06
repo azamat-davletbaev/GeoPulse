@@ -7,6 +7,7 @@ namespace GeoPulse.Tests.Integration;
 /// Каждый тест использует собственные топики и коды скважин, поэтому независим от остальных.
 /// </summary>
 [Collection("integration")]
+[Trait("Category", "Integration")]
 public sealed class ConsumerIdempotencyTests
 {
     private readonly GeoPulseContainersFixture _fixture;
@@ -172,7 +173,18 @@ public sealed class ConsumerIdempotencyTests
             })
             .Build();
 
-        return new ProductionConsumerService(scopeFactory, config, NullLogger<ProductionConsumerService>.Instance, dlqProducer);
+        // DLQ-публикатор и резолв well_id подключаются так же, как в Program.cs консьюмера.
+        var dlq = new DlqPublisher(dlqProducer, NullLogger<DlqPublisher>.Instance);
+        var wellIds = new WellIdCache(_fixture.PostgresConnectionString);
+        var topics = new TopicProvisioner(NullLogger<TopicProvisioner>.Instance);
+
+        return new ProductionConsumerService(
+            scopeFactory,
+            config,
+            NullLogger<ProductionConsumerService>.Instance,
+            dlq,
+            wellIds,
+            topics);
     }
 
     private async Task<int> CountWellsAsync(int npdCode)

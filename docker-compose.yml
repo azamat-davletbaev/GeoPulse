@@ -94,7 +94,7 @@ services:
     container_name: geopulse-webapi
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__GeoPulse: Host=postgres;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse
+      ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse
       ConnectionStrings__ClickHouse: Host=clickhouse;Port=8123;Database=gp;Username=geopulse;Password=geopulse
     ports:
       - "5146:5146"

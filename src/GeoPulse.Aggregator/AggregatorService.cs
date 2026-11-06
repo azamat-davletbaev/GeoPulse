@@ -1,4 +1,5 @@
 using ClickHouse.Client.ADO;
+using GeoPulse.ClickHouse;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -12,40 +13,13 @@ namespace GeoPulse.Aggregator
     /// </summary>
     public sealed class AggregatorService : BackgroundService
     {
-        private const string CreateDatabaseSql = "CREATE DATABASE IF NOT EXISTS gp";
-
-        private const string CreateMonthlySql =
-            "CREATE TABLE IF NOT EXISTS gp.monthly_production (" +
-            "well_id UInt32," +
-            "year UInt16," +
-            "month UInt8," +
-            "oil_vol_sum Float64," +
-            "gas_vol_sum Float64," +
-            "water_vol_sum Float64," +
-            "water_injection_vol_sum Float64," +
-            "on_stream_hrs_sum Float64," +
-            "days_count UInt64" +
-            ") ENGINE = MergeTree ORDER BY (well_id, year, month)";
-
-        private const string CreateProductionDailySql =
-            "CREATE TABLE IF NOT EXISTS gp.production_daily (" +
-            "well_id UInt32," +
-            "npd_well_bore_code UInt32," +
-            "date Date," +
-            "oil_vol Float64," +
-            "gas_vol Float64," +
-            "water_vol Float64," +
-            "water_injection_vol Float64," +
-            "on_stream_hrs Float64," +
-            "avg_downhole_pressure Float64," +
-            "avg_downhole_temperature Float64," +
-            "avg_dp_tubing Float64," +
-            "avg_annulus_pressure Float64," +
-            "avg_choke_size Float64," +
-            "avg_whp Float64," +
-            "avg_wht Float64," +
-            "dp_choke_size Float64" +
-            ") ENGINE = ReplacingMergeTree ORDER BY (npd_well_bore_code, date)";
+        /// <summary>DDL, который обеспечивает агрегатор: агрегаты и их источник.</summary>
+        private static readonly string[] SchemaStatements =
+        {
+            ClickHouseSchema.CreateDatabaseSql,
+            ClickHouseSchema.CreateMonthlyProductionSql,
+            ClickHouseSchema.CreateProductionDailySql
+        };
 
         private const string RebuildInsertSql =
             "INSERT INTO gp.monthly_production " +
@@ -76,7 +50,7 @@ namespace GeoPulse.Aggregator
                 intervalSeconds = 60;
             }
 
-            await EnsureSchemaAsync(connectionString, stoppingToken);
+            await ClickHouseSchema.EnsureAsync(connectionString, SchemaStatements, stoppingToken);
             _logger.LogInformation("Агрегатор запущен: интервал {Interval} сек", intervalSeconds);
 
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSeconds));
@@ -96,23 +70,6 @@ namespace GeoPulse.Aggregator
                 }
             }
             while (await timer.WaitForNextTickAsync(stoppingToken));
-        }
-
-        /// <summary>Создаёт базу gp и таблицы monthly_production / production_daily в ClickHouse.</summary>
-        private static async Task EnsureSchemaAsync(string connectionString, CancellationToken ct)
-        {
-            await using var connection = new ClickHouseConnection(connectionString);
-            await connection.OpenAsync(ct);
-            await using var command = connection.CreateCommand();
-
-            command.CommandText = CreateDatabaseSql;
-            await command.ExecuteNonQueryAsync(ct);
-
-            command.CommandText = CreateMonthlySql;
-            await command.ExecuteNonQueryAsync(ct);
-
-            command.CommandText = CreateProductionDailySql;
-            await command.ExecuteNonQueryAsync(ct);
         }
 
         /// <summary>Полный пересбор месячных агрегатов: TRUNCATE + INSERT ... SELECT ... FINAL.</summary>
