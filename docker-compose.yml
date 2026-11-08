@@ -1,4 +1,25 @@
+# Локальный стек GeoPulse для разработки.
+#
+# Поднимается одной командой из корня репозитория:
+#     docker compose up -d --build
+#
+# Отличия от прод-стека (docker-compose.prod.yml):
+#   * ничего не читается из .env — все учётные данные и адреса заданы здесь
+#     фиксированными значениями (geopulse/geopulse, БД geopulse_core и gp);
+#   * нет Caddy: WebAPI публикует порт 5146 напрямую, TLS не нужен;
+#   * образы приложения собираются из локальных исходников (build:), а не
+#     тянутся из ghcr.io;
+#   * наружу опубликованы порты для отладки: 5432 (Postgres), 8123/9000
+#     (ClickHouse), 9092 (Kafka — чтобы ingestion запускался с хоста),
+#     8080 (Kafka UI), 5146 (WebAPI).
+#
+# Ingestion в compose не входит (датасет Volve лежит в data/) и запускается с хоста:
+#     dotnet run --project src/GeoPulse.Ingestion.Service
+# Топик production-daily создаёт сам consumer/chingest при старте (ADR-015),
+# поэтому порядок «ingestion → консьюмеры» не важен.
+
 services:
+  # --- ИНФРАСТРУКТУРА ---
   postgres:
     image: postgres:17-alpine
     container_name: geopulse-postgres
@@ -25,8 +46,8 @@ services:
       CLICKHOUSE_PASSWORD: geopulse
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "8123:8123"   # HTTP-интерфейс: по нему ходят сервисы и ClickHouse.Client
+      - "9000:9000"   # нативный протокол: clickhouse-client с хоста
     volumes:
       - geopulse-chdata:/var/lib/clickhouse
     ulimits:
@@ -48,6 +69,8 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      # Два листенера: PLAINTEXT — внутри compose-сети, EXTERNAL — для сервисов,
+      # запущенных с хоста (ingestion через `dotnet run`).
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,EXTERNAL://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
@@ -58,10 +81,19 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Локально достаточно одной партиции (в проде — 3, см. docker-compose.prod.yml).
       KAFKA_NUM_PARTITIONS: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     ports:
       - "9092:9092"
+    healthcheck:
+      # Ответ только после старта KRaft-контроллера: на нём держатся depends_on
+      # у consumer/chingest/kafka-ui, чтобы они не падали при одновременном старте.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -72,19 +104,74 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
 
+  # --- СЕРВИСЫ ПРИЛОЖЕНИЯ (сборка из локальных исходников) ---
   consumer:
     build:
       context: .
       dockerfile: src/GeoPulse.Consumer/Dockerfile
     container_name: geopulse-consumer
-    volumes:
-      - ./src/GeoPulse.Consumer/appsettings.Docker.json:/app/appsettings.json:ro
+    # Перезапуск при падении (например, если Postgres ещё не принял соединение):
+    # при штатном завершении контейнер остаётся остановленным.
+    restart: on-failure
+    environment:
+      # Kafka → PostgreSQL; при старте применяет EF Core миграции (Database.MigrateAsync).
+      ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__Topic: production-daily
+      Kafka__DlqTopic: production-daily-dlq
     depends_on:
+      postgres:
+        condition: service_healthy
       kafka:
+        condition: service_healthy
+
+  chingest:
+    build:
+      context: .
+      dockerfile: src/GeoPulse.CHIngest/Dockerfile
+    container_name: geopulse-chingest
+    # Миграции EF Core применяет consumer, а не chingest. На ПЕРВОМ старте
+    # (пустой том geopulse-pgdata) таблицы `wells` ещё может не быть, и chingest
+    # один раз упадёт — restart: on-failure поднимет его снова, когда миграции
+    # уже применены. Без этого политика «docker compose up -d» на чистой машине
+    # оставляла бы chingest в состоянии Exited.
+    restart: on-failure
+    environment:
+      # Kafka → ClickHouse (gp.production_daily, gp.wells). well_id резолвится по
+      # npdWellBoreCode из PostgreSQL, поэтому нужен и CoreDb.
+      ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse
+      ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Database=gp;Username=geopulse;Password=geopulse
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__Topic: production-daily
+      Kafka__DlqTopic: production-daily-dlq
+    depends_on:
+      # Данные о скважинах в PostgreSQL пишет consumer (он же накатывает миграции),
+      # а chingest резолвит по ним well_id — поэтому стартуем после него.
+      consumer:
         condition: service_started
       postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  aggregator:
+    build:
+      context: .
+      dockerfile: src/GeoPulse.Aggregator/Dockerfile
+    container_name: geopulse-aggregator
+    restart: on-failure
+    environment:
+      # ClickHouse production_daily → monthly_production: пересчёт на старте и далее
+      # каждые RecalcIntervalSeconds. Другие хранилища сервису не нужны.
+      ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Database=gp;Username=geopulse;Password=geopulse
+      RecalcIntervalSeconds: "60"
+    depends_on:
+      clickhouse:
         condition: service_healthy
 
   webapi:
@@ -92,7 +179,9 @@ services:
       context: .
       dockerfile: src/GeoPulse.WebAPI/Dockerfile
     container_name: geopulse-webapi
+    restart: on-failure
     environment:
+      # Development — Swagger включён, подробные логи; фронт раздаёт сам WebAPI.
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse
       ConnectionStrings__ClickHouse: Host=clickhouse;Port=8123;Database=gp;Username=geopulse;Password=geopulse
@@ -103,6 +192,14 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+    healthcheck:
+      # Тот же контракт, что и в проде: GET /health → 200 + {"database":"up"}.
+      # curl есть в образе (устанавливается в src/GeoPulse.WebAPI/Dockerfile).
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null --max-time 3 http://127.0.0.1:5146/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   geopulse-pgdata:

@@ -1,6 +1,7 @@
 using System.Text;
 using Confluent.Kafka;
 using GeoPulse.Core.Events;
+using GeoPulse.Core.Geometry;
 using GeoPulse.Core.Models;
 using GeoPulse.Core.Repositories;
 using GeoPulse.Infrastructure;
@@ -290,6 +291,8 @@ namespace GeoPulse.Consumer
                 new NpgsqlParameter("@p1", NpgsqlDbType.Double) { Value = (object?)trajectory.TdMd ?? DBNull.Value },
                 new NpgsqlParameter("@p2", NpgsqlDbType.Double) { Value = (object?)trajectory.TdTvd ?? DBNull.Value });
 
+            await UpsertWellLocationAsync(db, wellId, trajectory);
+
             if (trajectory.Points.Count == 0)
             {
                 return;
@@ -329,6 +332,36 @@ namespace GeoPulse.Consumer
             sql.Append(" ON CONFLICT (well_id, md) DO NOTHING");
 
             await db.Database.ExecuteSqlRawAsync(sql.ToString(), parameters);
+        }
+
+        /// <summary>
+        /// Апсертит координаты устья (well_locations) в WGS84: устьевые координаты из заголовка
+        /// WITSML (Surface EW/NS, ED50 / UTM 31N) конвертируются в WGS84 через
+        /// CoordinateTransform.Ed50Utm31ToWgs84 (EPSG:1613) — тем же преобразованием, что и сид.
+        /// </summary>
+        private static async Task UpsertWellLocationAsync(CoreDbContext db, int wellId, TrajectoryData trajectory)
+        {
+            if (!trajectory.SurfaceEasting.HasValue || !trajectory.SurfaceNorthing.HasValue)
+            {
+                return;
+            }
+
+            var (latitude, longitude) = CoordinateTransform.Ed50Utm31ToWgs84(
+                trajectory.SurfaceEasting.Value, trajectory.SurfaceNorthing.Value);
+
+            const string sql =
+                "INSERT INTO well_locations (well_id, latitude, longitude, source) VALUES (@p0, @p1, @p2, @p3) " +
+                "ON CONFLICT (well_id) DO UPDATE SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, source = EXCLUDED.source";
+
+            await db.Database.ExecuteSqlRawAsync(
+                sql,
+                new NpgsqlParameter("@p0", NpgsqlDbType.Integer) { Value = wellId },
+                new NpgsqlParameter("@p1", NpgsqlDbType.Double) { Value = latitude },
+                new NpgsqlParameter("@p2", NpgsqlDbType.Double) { Value = longitude },
+                new NpgsqlParameter("@p3", NpgsqlDbType.Text)
+                {
+                    Value = "well.trajectory Surface EW/NS (ED50 UTM31N -> WGS84 EPSG:1613)"
+                });
         }
 
         /// <summary>Колонки well_trajectories в порядке параметров upsert-запроса.</summary>

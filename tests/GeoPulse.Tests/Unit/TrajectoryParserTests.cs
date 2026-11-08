@@ -61,6 +61,15 @@ public sealed class TrajectoryParserTests
     }
 
     [Fact]
+    public void Parse_ExtractsSurfaceCoordinates()
+    {
+        var parsed = TrajectoryParser.Parse(Fixture)!;
+
+        Assert.Equal(435049.831, parsed.SurfaceEasting);
+        Assert.Equal(6478560.825, parsed.SurfaceNorthing);
+    }
+
+    [Fact]
     public void Parse_LastPoint_MatchesBottomHole()
     {
         var parsed = TrajectoryParser.Parse(Fixture)!;

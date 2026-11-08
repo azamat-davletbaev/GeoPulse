@@ -4,7 +4,7 @@ using GeoPulse.Core.Events;
 namespace GeoPulse.Ingestion.Service
 {
     /// <summary>Результат разбора текстового файла траектории WITSML (*_ACTUAL).</summary>
-    public sealed record ParsedTrajectory(double? TdMd, double? TdTvd, IReadOnlyList<TrajectoryPointData> Points);
+    public sealed record ParsedTrajectory(double? TdMd, double? TdTvd, double? SurfaceEasting, double? SurfaceNorthing, IReadOnlyList<TrajectoryPointData> Points);
 
     /// <summary>
     /// Парсер текстовых выгрузок траекторий Volve
@@ -32,6 +32,8 @@ namespace GeoPulse.Ingestion.Service
 
             var tdMd = ParseHeaderValue(lines, "Bottom Hole MD:");
             var tdTvd = ParseHeaderValue(lines, "Bottom Hole TVD:");
+            var surfaceEasting = ParseHeaderValue(lines, "Surface EW:");
+            var surfaceNorthing = ParseHeaderValue(lines, "Surface NS:");
 
             var surveyIndex = Array.FindIndex(lines, line =>
                 line.Trim().Equals("SURVEY LIST", StringComparison.OrdinalIgnoreCase));
@@ -80,7 +82,7 @@ namespace GeoPulse.Ingestion.Service
                 });
             }
 
-            return new ParsedTrajectory(tdMd, tdTvd, points);
+            return new ParsedTrajectory(tdMd, tdTvd, surfaceEasting, surfaceNorthing, points);
         }
 
         private static double? ParseHeaderValue(IReadOnlyList<string> lines, string label)

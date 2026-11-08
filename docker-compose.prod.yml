@@ -149,6 +149,20 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+    # Проверка работоспособности через «живой» эндпоинт: GET /health отвечает
+    # 200 + {"database":"up"} либо 503 + {"database":"down"} (см.
+    # src/GeoPulse.WebAPI/Controllers/HealthController.cs). Код 503 от curl -f
+    # считается неуспехом — контейнер помечается unhealthy.
+    # В образе aspnet:10.0 нет ни curl, ни wget, поэтому curl устанавливается в
+    # src/GeoPulse.WebAPI/Dockerfile (final-стадия).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null --max-time 3 http://127.0.0.1:5146/health"]
+      # Интервал не меньше 10 с: каждый /health делает пробный запрос в PostgreSQL.
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
     # Порт наружу не публикуем — наружу смотрит только Caddy (80/443).
 
   caddy:
@@ -185,4 +199,3 @@ volumes:
   chdata:
   caddy_data:
   caddy_config:
-

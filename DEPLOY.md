@@ -5,7 +5,7 @@
 
 Архитектура деплоя:
 
-- Образы собирает GitHub Actions (`.github/workflows/deploy.yml`) и публикует
+- Образы собирает GitHub Actions (`.github/workflows/pipeline.yml`) и публикует
   в GitHub Container Registry: `ghcr.io/<OWNER>/geopulse-*` (webapi, consumer,
   chingest, aggregator, ingestion). Теги — короткий SHA коммита и `latest`.
 - На сервер копируются только файлы деплоя: `docker-compose.prod.yml`,
@@ -240,7 +240,8 @@ docker exec -i geopulse-postgres pg_restore -U geopulse -d geopulse_core --clean
 
 ## 5. Обновление демо следующим коммитом
 
-Всё автоматизировано: после пуша в `main` workflow `deploy.yml` собирает образы
+Всё автоматизировано: после пуша в `main` единый workflow `pipeline.yml` сначала
+прогоняет все тесты (.NET и фронтенд), затем собирает образы
 (теги `latest` и короткий SHA) и job `deploy` по SSH выполняет
 `bash /opt/geopulse/deploy.sh` с `IMAGE_TAG=<короткий SHA>`.
 
@@ -280,4 +281,3 @@ Postgres `256m`, Kafka heap `-Xmx384m` (контейнер `768m`), ClickHouse `
 каждый .NET-сервис `256m`. При нехватке памяти OOM-killer убьёт контейнер,
 `restart: unless-stopped` его поднимет. Если OOM повторяется — уменьшите лимиты
 ClickHouse/Kafka или число одновременных .NET-сервисов в пике.
-

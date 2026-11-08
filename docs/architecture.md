@@ -236,7 +236,7 @@ producer.Produce(topic, new Message<string, string> { Key = key, Value = value }
 
 ## 5. Топология запуска
 
-**Локально (`docker-compose.yml`)** — 6 сервисов: `postgres` (5432), `clickhouse` (8123, 9000), `kafka` (9092), `kafka-ui` (8080), `consumer` (собирается из `src/GeoPulse.Consumer/Dockerfile`), `webapi` (5146, собирается из `src/GeoPulse.WebAPI/Dockerfile`). `chingest`, `aggregator`, `ingestion` и `caddy` в локальный compose **не входят** — они запускаются с хоста через `dotnet run` (см. `docs/development.md`).
+**Локально (`docker-compose.yml`)** — 8 сервисов: `postgres` (5432), `clickhouse` (8123, 9000), `kafka` (9092, healthcheck), `kafka-ui` (8080), `consumer`, `chingest`, `aggregator` и `webapi` (5146). Все четыре .NET-сервиса собираются из локальных исходников (`build:`), учётные данные зашиты в сам файл (`geopulse`/`geopulse`, БД `geopulse_core` и `gp`), `.env` не нужен; сервисы стартуют по `depends_on: service_healthy` (postgres/clickhouse/kafka). `ingestion` и `caddy` в локальный compose **не входят** — данные импортируются с хоста (`dotnet run --project src/GeoPulse.Ingestion.Service`), TLS локально не нужен.
 
 **Прод (`docker-compose.prod.yml`)** — 8 постоянных сервисов: `postgres`, `kafka`, `clickhouse`, `consumer`, `chingest`, `aggregator`, `webapi`, `caddy`; плюс одноразовый `ingestion` в профиле `init`. Наружу опубликованы только 80/443 у Caddy; `postgres`, `kafka`, `clickhouse` и `webapi` портов не публикуют. Образы приложения — `ghcr.io/${OWNER}/geopulse-*:${DOCKER_TAG}`.
 

@@ -1,7 +1,6 @@
 # GeoPulse
 
-[![CI](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/ci.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/ci.yml)
-[![CD — build & push to ghcr](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/deploy.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/deploy.yml)
+[![CI/CD](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/pipeline.yml)
 
 GeoPulse — демонстрационная веб-система мониторинга добычи нефти на открытых данных месторождения **Volve** (норвежский шельф, Северное море). Данные импортируются событийным пайплайном через Apache Kafka, точечные показатели хранятся в PostgreSQL, сырые события и помесячные агрегаты — в ClickHouse. Поверх этого работает REST API и статический веб-клиент: интерактивная карта скважин с траекториями стволов, графики добычи по скважине и месторождению, отчёты в Excel и CSV. Весь стек поднимается одной командой `docker compose up -d --build`, деплой на сервер — через GitHub Actions и Caddy с автоматическим TLS.
 

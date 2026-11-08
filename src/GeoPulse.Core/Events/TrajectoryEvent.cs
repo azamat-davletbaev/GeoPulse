@@ -22,6 +22,12 @@ namespace GeoPulse.Core.Events
         /// <summary>Забой по вертикали (Bottom Hole TVD из заголовка выгрузки), м.</summary>
         public double? TdTvd { get; init; }
 
+        /// <summary>Устьевая координата Easting (Surface EW из заголовка выгрузки), ED50 / UTM 31N, м.</summary>
+        public double? SurfaceEasting { get; init; }
+
+        /// <summary>Устьевая координата Northing (Surface NS из заголовка выгрузки), ED50 / UTM 31N, м.</summary>
+        public double? SurfaceNorthing { get; init; }
+
         /// <summary>Замеры траектории по возрастанию MD.</summary>
         public IReadOnlyList<TrajectoryPointData> Points { get; init; } = Array.Empty<TrajectoryPointData>();
     }

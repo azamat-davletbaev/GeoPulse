@@ -5,11 +5,20 @@
 #
 # Статический фронт и REST API раздаёт сам WebAPI (UseStaticFiles), поэтому Caddy
 # просто проксирует весь трафик на webapi:5146 — поведение не меняется.
+#
+# Zero Downtime: при `docker compose up -d` контейнер webapi пересоздаётся — на
+# несколько секунд апстрим становится недоступен (порт ещё не слушается), и без
+# повторов Caddy сразу вернул бы 502. lb_try_duration — общий бюджет повторов на
+# один запрос, lb_try_interval — пауза между попытками: клиент ждёт до 15 с, пока
+# новый контейнер поднимется, вместо ошибки 502.
 
 {$DOMAIN} {
 	encode zstd gzip
 
-	reverse_proxy webapi:5146
+	reverse_proxy webapi:5146 {
+		lb_try_duration 15s
+		lb_try_interval 250ms
+	}
 }
 
 # Резервный вход по «голому» IP: используется, если DNS/DuckDNS или сертификат
@@ -19,5 +28,8 @@
 http://{$FALLBACK_IP} {
 	encode zstd gzip
 
-	reverse_proxy webapi:5146
+	reverse_proxy webapi:5146 {
+		lb_try_duration 15s
+		lb_try_interval 250ms
+	}
 }

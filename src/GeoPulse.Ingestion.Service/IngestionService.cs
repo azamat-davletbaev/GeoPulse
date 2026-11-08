@@ -186,6 +186,8 @@ namespace GeoPulse.Ingestion.Service
                             NpdWellBoreCode = npd,
                             TdMd = trajectory.TdMd,
                             TdTvd = trajectory.TdTvd,
+                            SurfaceEasting = trajectory.SurfaceEasting,
+                            SurfaceNorthing = trajectory.SurfaceNorthing,
                             Points = trajectory.Points
                         }
                     });
