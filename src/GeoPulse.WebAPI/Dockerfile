@@ -13,6 +13,7 @@ WORKDIR /src
 # Копируем только csproj, чтобы слой restore кэшировался отдельно от исходников.
 COPY ["src/GeoPulse.WebAPI/GeoPulse.WebAPI.csproj", "src/GeoPulse.WebAPI/"]
 COPY ["src/GeoPulse.Infrastructure/GeoPulse.Infrastructure.csproj", "src/GeoPulse.Infrastructure/"]
+COPY ["src/GeoPulse.ClickHouse/GeoPulse.ClickHouse.csproj", "src/GeoPulse.ClickHouse/"]
 COPY ["src/GeoPulse.Core/GeoPulse.Core.csproj", "src/GeoPulse.Core/"]
 RUN dotnet restore "src/GeoPulse.WebAPI/GeoPulse.WebAPI.csproj"
 
@@ -25,5 +26,16 @@ RUN dotnet publish "src/GeoPulse.WebAPI/GeoPulse.WebAPI.csproj" -c $configuratio
 
 FROM base AS final
 WORKDIR /app
+
+# curl нужен healthcheck'у webapi в docker-compose.prod.yml: в образе
+# aspnet:10.0 нет ни curl, ни wget. Ставим в отдельном слое до COPY, чтобы он
+# кэшировался независимо от кода приложения; базовый образ работает под USER app,
+# поэтому для установки пакетов временно переключаемся на root.
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+USER app
+
 COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "GeoPulse.WebAPI.dll"]

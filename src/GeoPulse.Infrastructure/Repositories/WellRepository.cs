@@ -58,28 +58,5 @@ namespace GeoPulse.Infrastructure.Repositories
 
             return entities.Select(Mapper.ToWellLocation).ToList();
         }
-
-        /// <inheritdoc />
-        public async Task AddRangeAsync(IEnumerable<Well> wells, CancellationToken cancellationToken = default)
-        {
-            var models = wells.ToList();
-            if (models.Count == 0)
-            {
-                return;
-            }
-
-            var entities = models.Select(Mapper.ToEntity).ToList();
-            _db.Wells.AddRange(entities);
-            await _db.SaveChangesAsync(cancellationToken);
-
-            for (var i = 0; i < models.Count; i++)
-            {
-                models[i].Id = entities[i].Id;
-            }
-        }
-
-        /// <inheritdoc />
-        public Task<bool> ExistsAsync(int npdWellBoreCode, CancellationToken cancellationToken = default) =>
-            _db.Wells.AnyAsync(well => well.NpdWellBoreCode == npdWellBoreCode, cancellationToken);
     }
 }

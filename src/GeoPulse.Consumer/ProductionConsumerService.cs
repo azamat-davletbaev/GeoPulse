@@ -1,9 +1,11 @@
 using System.Text;
-using System.Text.Json;
 using Confluent.Kafka;
 using GeoPulse.Core.Events;
+using GeoPulse.Core.Geometry;
 using GeoPulse.Core.Models;
+using GeoPulse.Core.Repositories;
 using GeoPulse.Infrastructure;
+using GeoPulse.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,22 +26,31 @@ namespace GeoPulse.Consumer
     {
         private const string ConsumerGroup = "geopulse-consumer";
 
+        /// <summary>Пауза перед повтором после ошибки чтения из Kafka (топик не создан, брокер недоступен).</summary>
+        private const int ConsumeErrorDelayMs = 1_000;
+
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly IConfiguration _configuration;
         private readonly ILogger<ProductionConsumerService> _logger;
-        private readonly IProducer<string, string> _dlqProducer;
+        private readonly DlqPublisher _dlq;
+        private readonly IWellIdResolver _wellIds;
+        private readonly TopicProvisioner _topics;
 
         /// <summary>Конструктор.</summary>
         public ProductionConsumerService(
             IServiceScopeFactory scopeFactory,
             IConfiguration configuration,
             ILogger<ProductionConsumerService> logger,
-            IProducer<string, string> dlqProducer)
+            DlqPublisher dlq,
+            IWellIdResolver wellIds,
+            TopicProvisioner topics)
         {
             _scopeFactory = scopeFactory;
             _configuration = configuration;
             _logger = logger;
-            _dlqProducer = dlqProducer;
+            _dlq = dlq;
+            _wellIds = wellIds;
+            _topics = topics;
         }
 
         /// <inheritdoc />
@@ -60,12 +71,27 @@ namespace GeoPulse.Consumer
                 batchSize = 500;
             }
 
+            // Топик создаём явно: подписка на несуществующий топик даёт UNKNOWN_TOPIC_OR_PARTITION,
+            // а Kafka не создаёт топик по запросу консьюмера (KIP-361).
+            var partitions = _configuration.GetValue("Kafka:TopicPartitions", 1);
+            var replicationFactor = _configuration.GetValue("Kafka:ReplicationFactor", 1);
+            await _topics.EnsureAsync(
+                bootstrapServers,
+                topic,
+                partitions <= 0 ? 1 : partitions,
+                (short)(replicationFactor <= 0 ? 1 : replicationFactor),
+                stoppingToken);
+
             var consumerConfig = new ConsumerConfig
             {
                 BootstrapServers = bootstrapServers,
                 GroupId = ConsumerGroup,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
-                EnableAutoCommit = false
+                EnableAutoCommit = false,
+                // Фолбэк для брокеров, где автосоздание по подписке действительно работает.
+                // Основной путь — явное создание топика через TopicProvisioner (см. ADR-015):
+                // на Kafka 3+/4 c KIP-361 подписка консьюмера топик не создаёт.
+                AllowAutoCreateTopics = true
             };
 
             using var consumer = new ConsumerBuilder<string, string>(consumerConfig).Build();
@@ -81,7 +107,34 @@ namespace GeoPulse.Consumer
             {
                 while (!stoppingToken.IsCancellationRequested)
                 {
-                    var result = consumer.Consume(TimeSpan.FromMilliseconds(250));
+                    ConsumeResult<string, string>? result;
+                    try
+                    {
+                        result = consumer.Consume(TimeSpan.FromMilliseconds(250));
+                    }
+                    catch (ConsumeException ex)
+                    {
+                        // Топик может быть ещё не создан или брокер кратко недоступен: консьюмер
+                        // не должен ронять хост (BackgroundServiceExceptionBehavior=StopHost),
+                        // поэтому ждём и пробуем снова. Такие ошибки в DLQ не отправляются.
+                        _logger.LogWarning(
+                            "Ошибка чтения из топика {Topic}: {Reason}. Повтор через {DelayMs} мс",
+                            topic,
+                            ex.Error.Reason,
+                            ConsumeErrorDelayMs);
+
+                        try
+                        {
+                            await Task.Delay(ConsumeErrorDelayMs, stoppingToken);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
                     if (result is null)
                     {
                         // Топик опустел — сбрасываем накопленный батч, чтобы остаток не зависел от размера батча.
@@ -91,65 +144,67 @@ namespace GeoPulse.Consumer
 
                     counters.Received++;
 
-                    var classification = Classify(result.Message.Value);
+                    var classification = EventClassifier.Classify(result.Message.Value);
 
                     switch (classification.Kind)
                     {
                         case MessageKind.Well:
-                        {
-                            await FlushDailyBatchAsync(db, batch, consumer, counters);
-
-                            await UpsertWellAsync(db, classification.Well!);
-                            counters.Wells++;
-                            consumer.Commit(result);
-                            break;
-                        }
-                        case MessageKind.Daily:
-                        {
-                            var wellId = await ResolveWellIdAsync(db, classification.Daily!.NpdWellBoreCode);
-                            if (wellId is null)
-                            {
-                                await PublishDlqAsync(dlqTopic, result, DlqReasons.WellNotFound);
-                                counters.ToDlq++;
-                                consumer.Commit(result);
-                                break;
-                            }
-
-                            batch.Add(ToDailyProduction(wellId.Value, classification.Daily));
-
-                            if (batch.Count >= batchSize)
                             {
                                 await FlushDailyBatchAsync(db, batch, consumer, counters);
-                            }
-                            break;
-                        }
-                        case MessageKind.Trajectory:
-                        {
-                            await FlushDailyBatchAsync(db, batch, consumer, counters);
 
-                            var wellId = await ResolveWellIdAsync(db, classification.Trajectory!.NpdWellBoreCode);
-                            if (wellId is null)
+                                await UpsertWellAsync(db, classification.Well!);
+                                counters.Wells++;
+                                consumer.Commit(result);
+                                break;
+                            }
+                        case MessageKind.Daily:
                             {
-                                await PublishDlqAsync(dlqTopic, result, DlqReasons.WellNotFound);
+                                var wellId = await _wellIds.ResolveAsync(classification.Daily!.NpdWellBoreCode, stoppingToken);
+                                if (wellId is null)
+                                {
+                                    await _dlq.PublishAsync(dlqTopic, result, DlqReasons.WellNotFound, stoppingToken);
+                                    counters.ToDlq++;
+                                    consumer.Commit(result);
+                                    break;
+                                }
+
+                                batch.Add(ToDailyProduction(wellId.Value, classification.Daily));
+
+                                if (batch.Count >= batchSize)
+                                {
+                                    await FlushDailyBatchAsync(db, batch, consumer, counters);
+                                }
+                                break;
+                            }
+                        case MessageKind.Trajectory:
+                            {
+                                await FlushDailyBatchAsync(db, batch, consumer, counters);
+
+                                var wellId = await _wellIds.ResolveAsync(
+                                    classification.Trajectory!.NpdWellBoreCode, stoppingToken);
+                                if (wellId is null)
+                                {
+                                    await _dlq.PublishAsync(dlqTopic, result, DlqReasons.WellNotFound, stoppingToken);
+                                    counters.ToDlq++;
+                                    consumer.Commit(result);
+                                    break;
+                                }
+
+                                await UpsertTrajectoryAsync(db, wellId.Value, classification.Trajectory);
+                                counters.Trajectories++;
+                                consumer.Commit(result);
+                                break;
+                            }
+                        default:
+                            {
+                                await FlushDailyBatchAsync(db, batch, consumer, counters);
+
+                                await _dlq.PublishAsync(
+                                    dlqTopic, result, classification.Error ?? DlqReasons.InvalidEvent, stoppingToken);
                                 counters.ToDlq++;
                                 consumer.Commit(result);
                                 break;
                             }
-
-                            await UpsertTrajectoryAsync(db, wellId.Value, classification.Trajectory);
-                            counters.Trajectories++;
-                            consumer.Commit(result);
-                            break;
-                        }
-                        default:
-                        {
-                            await FlushDailyBatchAsync(db, batch, consumer, counters);
-
-                            await PublishDlqAsync(dlqTopic, result, classification.Error ?? DlqReasons.InvalidEvent);
-                            counters.ToDlq++;
-                            consumer.Commit(result);
-                            break;
-                        }
                     }
                 }
             }
@@ -166,7 +221,7 @@ namespace GeoPulse.Consumer
                     _logger.LogWarning(ex, "Ошибка при закрытии консьюмера");
                 }
 
-                _dlqProducer.Flush(TimeSpan.FromSeconds(10));
+                _dlq.Flush(TimeSpan.FromSeconds(10));
 
                 _logger.LogInformation(
                     "Консьюмер завершён: получено {Received}, вставлено {Inserted}, пропущено (дубликаты) {Skipped}, в DLQ {Dlq}, скважин {Wells}, траекторий {Trajectories}",
@@ -223,16 +278,6 @@ namespace GeoPulse.Consumer
                 new NpgsqlParameter("@p3", NpgsqlDbType.Text) { Value = well.Type });
         }
 
-        /// <summary>Ищет скважину по натуральному ключу; null — если скважина ещё не зарегистрирована.</summary>
-        private static async Task<int?> ResolveWellIdAsync(CoreDbContext db, int npdWellBoreCode)
-        {
-            var well = await db.Wells
-                .AsNoTracking()
-                .FirstOrDefaultAsync(w => w.NpdWellBoreCode == npdWellBoreCode);
-
-            return well?.Id;
-        }
-
         /// <summary>Пишет траекторию: метаданные забоя (1:1, last wins) и замеры (reject дубликатов по (well_id, md)).</summary>
         private static async Task UpsertTrajectoryAsync(CoreDbContext db, int wellId, TrajectoryData trajectory)
         {
@@ -245,6 +290,8 @@ namespace GeoPulse.Consumer
                 new NpgsqlParameter("@p0", NpgsqlDbType.Integer) { Value = wellId },
                 new NpgsqlParameter("@p1", NpgsqlDbType.Double) { Value = (object?)trajectory.TdMd ?? DBNull.Value },
                 new NpgsqlParameter("@p2", NpgsqlDbType.Double) { Value = (object?)trajectory.TdTvd ?? DBNull.Value });
+
+            await UpsertWellLocationAsync(db, wellId, trajectory);
 
             if (trajectory.Points.Count == 0)
             {
@@ -285,6 +332,36 @@ namespace GeoPulse.Consumer
             sql.Append(" ON CONFLICT (well_id, md) DO NOTHING");
 
             await db.Database.ExecuteSqlRawAsync(sql.ToString(), parameters);
+        }
+
+        /// <summary>
+        /// Апсертит координаты устья (well_locations) в WGS84: устьевые координаты из заголовка
+        /// WITSML (Surface EW/NS, ED50 / UTM 31N) конвертируются в WGS84 через
+        /// CoordinateTransform.Ed50Utm31ToWgs84 (EPSG:1613) — тем же преобразованием, что и сид.
+        /// </summary>
+        private static async Task UpsertWellLocationAsync(CoreDbContext db, int wellId, TrajectoryData trajectory)
+        {
+            if (!trajectory.SurfaceEasting.HasValue || !trajectory.SurfaceNorthing.HasValue)
+            {
+                return;
+            }
+
+            var (latitude, longitude) = CoordinateTransform.Ed50Utm31ToWgs84(
+                trajectory.SurfaceEasting.Value, trajectory.SurfaceNorthing.Value);
+
+            const string sql =
+                "INSERT INTO well_locations (well_id, latitude, longitude, source) VALUES (@p0, @p1, @p2, @p3) " +
+                "ON CONFLICT (well_id) DO UPDATE SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, source = EXCLUDED.source";
+
+            await db.Database.ExecuteSqlRawAsync(
+                sql,
+                new NpgsqlParameter("@p0", NpgsqlDbType.Integer) { Value = wellId },
+                new NpgsqlParameter("@p1", NpgsqlDbType.Double) { Value = latitude },
+                new NpgsqlParameter("@p2", NpgsqlDbType.Double) { Value = longitude },
+                new NpgsqlParameter("@p3", NpgsqlDbType.Text)
+                {
+                    Value = "well.trajectory Surface EW/NS (ED50 UTM31N -> WGS84 EPSG:1613)"
+                });
         }
 
         /// <summary>Колонки well_trajectories в порядке параметров upsert-запроса.</summary>
@@ -340,53 +417,6 @@ namespace GeoPulse.Consumer
             return await db.Database.ExecuteSqlRawAsync(sql.ToString(), parameters);
         }
 
-        /// <summary>Отправляет оригинальное сообщение в DLQ-топик с причиной в заголовке.</summary>
-        private async Task PublishDlqAsync(string dlqTopic, ConsumeResult<string, string> result, string reason)
-        {
-            var message = new Message<string, string>
-            {
-                Key = result.Message.Key,
-                Value = result.Message.Value,
-                Headers = new Headers
-                {
-                    { "reason", Encoding.UTF8.GetBytes(reason) },
-                    { "source-topic", Encoding.UTF8.GetBytes(result.Topic) }
-                }
-            };
-
-            try
-            {
-                await _dlqProducer.ProduceAsync(dlqTopic, message);
-
-                var rawBody = result.Message.Value ?? string.Empty;
-                var bodyPreview = rawBody.Length <= 100 ? rawBody : rawBody[..100];
-                _logger.LogInformation(
-                    "DLQ: eventType={EventType}, reason={Reason}, key={Key}, body={Body}",
-                    GetEventType(rawBody),
-                    reason,
-                    result.Message.Key,
-                    bodyPreview);
-            }
-            catch (ProduceException<string, string> ex)
-            {
-                _logger.LogError(ex, "Ошибка отправки в DLQ-топик {Topic}", dlqTopic);
-            }
-        }
-
-        /// <summary>Извлекает eventType из тела сообщения; unknown — если тип не определён.</summary>
-        private static string GetEventType(string raw)
-        {
-            try
-            {
-                var header = JsonSerializer.Deserialize<EventHeader>(raw, MessagingJson.Options);
-                return string.IsNullOrWhiteSpace(header?.EventType) ? "unknown" : header.EventType;
-            }
-            catch (JsonException)
-            {
-                return "unparseable";
-            }
-        }
-
         /// <summary>Собирает доменную модель добычи из события, подставляя разрешённый wellId.</summary>
         private static DailyProduction ToDailyProduction(int wellId, DailyProductionData data) => new()
         {
@@ -407,93 +437,6 @@ namespace GeoPulse.Consumer
             WaterVol = data.WaterVol,
             WaterInjectionVol = data.WaterInjectionVol
         };
-
-        private enum MessageKind
-        {
-            Well,
-            Daily,
-            Trajectory,
-            Invalid
-        }
-
-        private sealed record Classification(
-            MessageKind Kind,
-            WellRegisteredData? Well,
-            DailyProductionData? Daily,
-            TrajectoryData? Trajectory,
-            string? Error);
-
-        /// <summary>Разбирает сообщение: определяет тип/версию схемы и десериализует данные.</summary>
-        private static Classification Classify(string? raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.EmptyMessage);
-            }
-
-            EventHeader header;
-            try
-            {
-                header = JsonSerializer.Deserialize<EventHeader>(raw, MessagingJson.Options) ?? new EventHeader();
-            }
-            catch (JsonException)
-            {
-                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.Malformed);
-            }
-
-            if (header.SchemaVersion != EventTypes.SchemaVersion)
-            {
-                return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownSchemaVersion);
-            }
-
-            switch (header.EventType)
-            {
-                case EventTypes.WellRegistered:
-                {
-                    try
-                    {
-                        var evt = JsonSerializer.Deserialize<WellRegisteredEvent>(raw, MessagingJson.Options);
-                        return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
-                            : new Classification(MessageKind.Well, evt.Data, null, null, null);
-                    }
-                    catch (JsonException)
-                    {
-                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableWellEvent);
-                    }
-                }
-                case EventTypes.ProductionDaily:
-                {
-                    try
-                    {
-                        var evt = JsonSerializer.Deserialize<DailyProductionEvent>(raw, MessagingJson.Options);
-                        return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
-                            : new Classification(MessageKind.Daily, null, evt.Data, null, null);
-                    }
-                    catch (JsonException)
-                    {
-                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableDailyEvent);
-                    }
-                }
-                case EventTypes.Trajectory:
-                {
-                    try
-                    {
-                        var evt = JsonSerializer.Deserialize<TrajectoryEvent>(raw, MessagingJson.Options);
-                        return evt?.Data is null
-                            ? new Classification(MessageKind.Invalid, null, null, null, DlqReasons.MissingData)
-                            : new Classification(MessageKind.Trajectory, null, null, evt.Data, null);
-                    }
-                    catch (JsonException)
-                    {
-                        return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnparseableTrajectoryEvent);
-                    }
-                }
-                default:
-                    return new Classification(MessageKind.Invalid, null, null, null, DlqReasons.UnknownEventTypeFor(header.EventType));
-            }
-        }
 
         /// <summary>Колонки daily_production в порядке параметров upsert-запроса.</summary>
         private static readonly (string Column, NpgsqlDbType Type, Func<DailyProduction, object?> Value)[] DailyColumns =

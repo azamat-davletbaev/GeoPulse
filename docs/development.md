@@ -10,8 +10,8 @@
 | `src/*/*.csproj`, `tests/GeoPulse.Tests/GeoPulse.Tests.csproj` | target framework и версии пакетов |
 | `docker-compose.yml` | локальный стек, порты, учётные данные |
 | `docker-compose.prod.yml`, `.env.example` | прод-стек и переменные `.env` |
-| `dotnet-tools.json` | версия `dotnet-ef` |
-| `.github/workflows/ci.yml` | версии .NET и Node, команды сборки/тестов |
+| `.config/dotnet-tools.json` | версия `dotnet-ef` |
+| `.github/workflows/pipeline.yml` | версии .NET и Node, команды сборки/тестов |
 | `src/*/appsettings*.json` | строки подключения и пути к данным по умолчанию |
 | `tests/smoke/webapi-smoke.ps1`, `tests/frontend/run-webapp-check.ps1` | смок-тест API и проверка фронтенда |
 
@@ -19,10 +19,10 @@
 
 | Инструмент | Версия | Зачем | Где зафиксирована |
 | --- | --- | --- | --- |
-| .NET SDK | `10.0.x` (все проекты — `net10.0`) | сборка, тесты, запуск сервисов вне контейнеров | `ci.yml` (`dotnet-version: '10.0.x'`), `TargetFramework` в каждом csproj |
-| Docker Engine / Docker Desktop + `docker compose` | актуальная; в CI — предустановленный Docker на `ubuntu-latest` | инфраструктура (Postgres, Kafka, ClickHouse) и Testcontainers | `docker-compose*.yml`, `ci.yml`, `tests/GeoPulse.Tests/*.csproj` |
-| Node.js | `20` | проверка фронтенда (`tests/frontend/webapp-check.js`); локально можно не ставить — скрипт гоняет Node в контейнере | `ci.yml` (`node-version: '20'`), `tests/frontend/run-webapp-check.ps1` (`node:20-alpine`) |
-| `dotnet-ef` | `10.0.14` | миграции EF Core вручную | `dotnet-tools.json` |
+| .NET SDK | `10.0.x` (все проекты — `net10.0`) | сборка, тесты, запуск сервисов вне контейнеров | `pipeline.yml` (`dotnet-version: '10.0.x'`), `TargetFramework` в каждом csproj |
+| Docker Engine / Docker Desktop + `docker compose` | актуальная; в CI — предустановленный Docker на `ubuntu-latest` | инфраструктура (Postgres, Kafka, ClickHouse) и Testcontainers | `docker-compose*.yml`, `pipeline.yml`, `tests/GeoPulse.Tests/*.csproj` |
+| Node.js | `20` | проверка фронтенда (`tests/frontend/webapp-check.js`); локально можно не ставить — скрипт гоняет Node в контейнере | `pipeline.yml` (`node-version: '20'`), `tests/frontend/run-webapp-check.ps1` (`node:20-alpine`) |
+| `dotnet-ef` | `10.0.14` | миграции EF Core вручную | `.config/dotnet-tools.json` |
 
 Версии NuGet-пакетов (из csproj): `Microsoft.EntityFrameworkCore.Relational` 10.0.14, `Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.3, `Confluent.Kafka` 2.16.0, `ClickHouse.Client` 7.14.0, `ClosedXML` 0.105.1, `Swashbuckle.AspNetCore` 10.3.1, `ExcelDataReader` + `ExcelDataReader.DataSet` 3.9.0, `Microsoft.Extensions.Hosting` 10.0.14; тесты — `xunit` 2.9.3, `xunit.runner.visualstudio` 3.0.2, `Microsoft.NET.Test.Sdk` 17.12.0, `Microsoft.AspNetCore.TestHost` 10.0.14, `Testcontainers` + `.PostgreSql` + `.Kafka` + `.ClickHouse` 4.16.0.
 
@@ -34,14 +34,16 @@ Solution-файл — `GeoPulse.slnx` (XML-формат, не `.sln`). Прое�
 
 | Проект | Тип | Назначение |
 | --- | --- | --- |
-| `src/GeoPulse.Core` | библиотека | доменные модели (`Models/`), события (`Events/`), преобразование координат (`Geometry/CoordinateTransform`), интерфейсы репозиториев. Зависимостей от инфраструктуры нет. |
-| `src/GeoPulse.Infrastructure` | библиотека | EF Core: `CoreDbContext`, сущности, репозитории, миграции, `AddGeoPulseInfrastructure`. |
+| `src/GeoPulse.Core` | библиотека | доменные модели (`Models/`), события (`Events/`), преобразование координат (`Geometry/CoordinateTransform`), интерфейсы репозиториев и `IWellIdResolver`. Зависимостей от инфраструктуры нет. |
+| `src/GeoPulse.Infrastructure` | библиотека | EF Core: `CoreDbContext`, сущности, репозитории, миграции, `AddGeoPulseInfrastructure`; резолв `npdWellBoreCode → well_id` (`WellIds/WellIdCache`). |
+| `src/GeoPulse.Messaging` | библиотека | общий разбор сообщений (`EventClassifier`) и публикация в DLQ (`DlqPublisher`) для консьюмеров. |
+| `src/GeoPulse.ClickHouse` | библиотека | DDL ClickHouse (`ClickHouseSchema`) и его идемпотентное создание. |
 | `src/GeoPulse.Ingestion.Service` | консольное приложение | парсит Excel Volve и текстовые траектории, публикует события в Kafka. В БД не пишет. |
 | `src/GeoPulse.Consumer` | консольное приложение (`BackgroundService`) | Kafka → PostgreSQL, применяет миграции на старте, ошибки в DLQ. |
 | `src/GeoPulse.CHIngest` | консольное приложение (`BackgroundService`) | Kafka → ClickHouse (`gp.production_daily`, `gp.wells`). |
 | `src/GeoPulse.Aggregator` | консольное приложение (`BackgroundService`) | ClickHouse `production_daily` → `monthly_production` по таймеру. |
 | `src/GeoPulse.WebAPI` | ASP.NET Core Web API | REST API + Swagger + раздача статики `web/`. |
-| `tests/GeoPulse.Tests` | xUnit | 92 теста: unit (`Unit/`), контрактные (`Contract/`), интеграционные на Testcontainers (`Integration/`). |
+| `tests/GeoPulse.Tests` | xUnit | 103 теста: unit (`Unit/`), контрактные (`Contract/`), интеграционные на Testcontainers (`Integration/`). |
 
 Прочие каталоги: `web/` — статический фронтенд (Leaflet + ECharts, локальные vendor-файлы), `data/` — датасет Volve (xlsx + `WellWellbore`), `sql/` — сид координат устьев, `scripts/` — подготовка сервера и бэкап, `tests/smoke/`, `tests/frontend/` — скрипты проверок, `docs/` — документация.
 
@@ -85,7 +87,7 @@ cd GeoPulse
 docker compose up -d --build
 ```
 
-Что произойдёт: скачаются `postgres:17-alpine`, `clickhouse/clickhouse-server:24.8`, `apache/kafka:4.0.0`, `provectuslabs/kafka-ui:latest`; соберутся образы `consumer` и `webapi`; `consumer` дождётся healthy-состояния Postgres и на старте применит EF Core миграции.
+Что произойдёт: скачаются `postgres:17-alpine`, `clickhouse/clickhouse-server:24.8`, `apache/kafka:4.0.0`, `provectuslabs/kafka-ui:latest`; соберутся образы `consumer`, `chingest`, `aggregator` и `webapi`; сервисы стартуют только после healthy-состояния Postgres/ClickHouse/Kafka, `consumer` на старте применит EF Core миграции, `chingest` создаст схему ClickHouse `gp`.
 
 Проверка:
 
@@ -95,7 +97,7 @@ curl http://localhost:5146/health
 # {"status":"ok","database":"up","checkedAtUtc":"..."}
 ```
 
-Ожидаемые контейнеры: `geopulse-postgres`, `geopulse-clickhouse`, `geopulse-kafka`, `geopulse-kafka-ui`, `geopulse-consumer`, `geopulse-webapi`. **`chingest`, `aggregator`, `ingestion` и `caddy` в локальный compose не входят** — см. шаги 4–6.
+Ожидаемые контейнеры: `geopulse-postgres`, `geopulse-clickhouse`, `geopulse-kafka`, `geopulse-kafka-ui`, `geopulse-consumer`, `geopulse-chingest`, `geopulse-aggregator`, `geopulse-webapi` (у инфраструктуры и `webapi` есть healthcheck). **`ingestion` и `caddy` в локальный compose не входят** — см. шаги 4 и 7.
 
 ### Шаг 3. Миграции (вручную, если нужно)
 
@@ -109,6 +111,8 @@ dotnet ef database update --project src/GeoPulse.Infrastructure
 В проекте `GeoPulse.Infrastructure` есть `CoreDbContextFactory` (design-time фабрика), поэтому команда не требует отдельного startup-проекта. Строка подключения берётся из `ConnectionStrings__CoreDb`, иначе — `Host=localhost;Port=5432;Database=geopulse_core;Username=geopulse;Password=geopulse`.
 
 ### Шаг 4. Первичный импорт данных
+
+Консьюмеры (`consumer`, `chingest`) можно запускать до импорта: топик `production-daily` создаётся при их старте (ADR-015), ошибка чтения из ещё не созданного топика больше не останавливает сервис.
 
 Ingestion в compose нет, поэтому запускается с хоста (Kafka опубликована на `localhost:9092`):
 
@@ -128,14 +132,22 @@ dotnet run --project src/GeoPulse.Ingestion.Service
 
 ### Шаг 5. Заполнить ClickHouse (для аналитики и отчётов)
 
-`CHIngest` и `Aggregator` в локальный compose не входят. Запустить в двух отдельных терминалах:
+`CHIngest` и `Aggregator` входят в локальный compose и стартуют автоматически: `chingest` пишет в ClickHouse (`gp.production_daily`, `gp.wells`) из Kafka, `aggregator` пересчитывает `gp.monthly_production` на старте и далее каждые `RecalcIntervalSeconds` (60 с). Отдельный DDL не нужен — схему `gp` создаёт `ClickHouseSchema.EnsureAsync` при старте этих сервисов.
+
+Проверить, что конвейер отработал:
+
+```bash
+docker compose logs -f chingest aggregator
+```
+
+Для отладки из IDE сервисы можно запустить и с хоста — они берут `ClickHouse:ConnectionString` и `ConnectionStrings:CoreDb` из `appsettings.json` (`localhost`-адреса, Kafka — `localhost:9092`):
 
 ```bash
 dotnet run --project src/GeoPulse.CHIngest
 dotnet run --project src/GeoPulse.Aggregator
 ```
 
-`CHIngest` возьмёт из `appsettings.json` строки `ClickHouse:ConnectionString` (`Host=localhost;Port=8123;Database=gp;Username=geopulse;Password=geopulse`) и `ConnectionStrings:CoreDb` — по ним он резолвит `npdWellBoreCode → well_id` из PostgreSQL, поэтому запускать его нужно **после** того, как `Consumer` записал скважины. `Aggregator` пересчитывает `gp.monthly_production` сразу на старте и далее каждые `RecalcIntervalSeconds` (60 с).
+`CHIngest` резолвит `npdWellBoreCode → well_id` по таблице `wells` в PostgreSQL, поэтому вне compose его запускают **после** того, как `Consumer` записал скважины.
 
 Проверка объёмов:
 
@@ -166,7 +178,7 @@ Get-Content sql\seed_well_locations.sql -Raw | docker compose exec -T postgres p
 | --- | --- |
 | <http://localhost:5146/> | карта скважин (`web/index.html`) |
 | <http://localhost:5146/reports.html> | отчёты по месторождению |
-| <http://localhost:5146/forecast.html> | страница прогноза (ML-эндпоинта в этом репозитории нет) |
+| <http://localhost:5146/forecast.html> | страница прогноза (заготовка под ML-эндпоинты) |
 | <http://localhost:5146/about.html> | «О проекте» |
 | <http://localhost:5146/swagger> | Swagger UI |
 | <http://localhost:8080> | Kafka UI (`kafka-ui`): топики `production-daily`, `production-daily-dlq` |
@@ -177,17 +189,20 @@ Get-Content sql\seed_well_locations.sql -Raw | docker compose exec -T postgres p
 # 1. Сборка всего solution
 dotnet build GeoPulse.slnx -c Release
 
+# 1a. Проверка стиля (то же, что в CI)
+dotnet format GeoPulse.slnx --verify-no-changes --no-restore
+
 # 2. Все тесты (нужен запущенный Docker: интеграционные поднимают контейнеры через Testcontainers)
 dotnet test tests/GeoPulse.Tests/GeoPulse.Tests.csproj -c Release
 ```
 
-В наборе 92 теста, разложенных по трём группам:
+В наборе 103 теста, разложенных по трём группам:
 
 | Группа | Файлы | Тестов | Нужен Docker |
 | --- | --- | --- | --- |
-| `Unit` | `CoordinateTransformTests`, `EventClassificationTests`, `EventJsonSerializationTests`, `IngestionParsingTests`, `ReportServiceTests`, `TrajectoryParserTests` | 68 | нет |
-| `Contract` | `AnalyticsContractDataTests`, `AnalyticsContractValidationTests`, `ReportsContractTests`, `TrajectoryContractTests`, `WellsContractTests` | 16 | нет (in-memory `TestServer` + `FakeRepositories`) |
-| `Integration` | `AggregatorServiceTests`, `CHIngestIdempotencyTests`, `ConsumerIdempotencyTests` | 8 | да (`Testcontainers.PostgreSql` / `.Kafka` / `.ClickHouse`) |
+| `Unit` | `CoordinateTransformTests`, `EventClassificationTests`, `EventJsonSerializationTests`, `IngestionParsingTests`, `ReportDataLoaderTests`, `ReportMetricsTests`, `ReportWritersTests`, `TrajectoryParserTests` | 75 | нет |
+| `Contract` | `AnalyticsContractValidationTests`, `ReportsContractTests`, `TrajectoryContractTests`, `WellsContractTests` | 13 | нет (in-memory `TestServer` + `FakeRepositories`) |
+| `Integration` | `AggregatorServiceTests`, `AnalyticsContractDataTests`, `CHIngestIdempotencyTests`, `ConsumerIdempotencyTests`, `WellIdCacheTests` | 15 | да (`Testcontainers.PostgreSql` / `.Kafka` / `.ClickHouse`); помечены `[Trait("Category","Integration")]` |
 
 Отдельные группы:
 
@@ -254,4 +269,4 @@ docker compose down -v
 2. **Порты локального стека** (5432, 8123, 9000, 9092, 8080, 5146) публикуются наружу. Если на машине занят любой из них, `docker compose up` упадёт — какой порт менять безопаснее (зависит от того, что ещё запущено) — [УТОЧНИТЬ].
 3. **`dotnet ef database update`** опирается на design-time фабрику `CoreDbContextFactory` в `GeoPulse.Infrastructure`. Проверялась ли команда на чистой машине (и нужен ли `--startup-project` для конкретной версии CLI) — [УТОЧНИТЬ].
 4. **Проверка фронтенда локально на Windows** требует запущенного Docker (образ `node:20-alpine`); вариант «Node на хосте» в документации не описан в скриптах — [УТОЧНИТЬ], нужен ли.
-5. **Интеграционные тесты (8 шт.)** в этом окружении не прогонялись: они поднимают Postgres/Kafka/ClickHouse через Testcontainers и требуют времени на скачивание образов. Команда выше соответствует `ci.yml` — [УТОЧНИТЬ] результаты на чистой машине.
+5. **Интеграционные тесты (8 шт.)** в этом окружении не прогонялись: они поднимают Postgres/Kafka/ClickHouse через Testcontainers и требуют времени на скачивание образов. Команда выше соответствует `pipeline.yml` — [УТОЧНИТЬ] результаты на чистой машине.

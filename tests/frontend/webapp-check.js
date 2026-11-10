@@ -219,11 +219,12 @@ const L = {
   latLngBounds
 };
 // Данные стенда: в сценарии mixed битые и валидные скважины идут вперемешку.
+// Код НПД в стенде совпадает с wellId; API адресует траектории и отчёты кодом НПД.
 const wells = [
-  { wellId: 1, name: 'ok-full', field: 'Volve', latitude: 58.4412, longitude: 1.8541, tdMd: 3200, tdTvd: 2500 },
-  { wellId: 2, name: 'bad-coords', field: 'Volve', latitude: 'oops', longitude: null, tdMd: null, tdTvd: null },
-  { wellId: 3, name: 'http-500', field: 'Volve', latitude: 58.4413, longitude: 1.8542, tdMd: null, tdTvd: null },
-  { wellId: 4, name: 'single-point', field: 'Volve', latitude: 58.4414, longitude: 1.8543, tdMd: 100, tdTvd: 90 }
+  { wellId: 1, npdWellBoreCode: 1, name: 'ok-full', field: 'Volve', latitude: 58.4412, longitude: 1.8541, tdMd: 3200, tdTvd: 2500 },
+  { wellId: 2, npdWellBoreCode: 2, name: 'bad-coords', field: 'Volve', latitude: 'oops', longitude: null, tdMd: null, tdTvd: null },
+  { wellId: 3, npdWellBoreCode: 3, name: 'http-500', field: 'Volve', latitude: 58.4413, longitude: 1.8542, tdMd: null, tdTvd: null },
+  { wellId: 4, npdWellBoreCode: 4, name: 'single-point', field: 'Volve', latitude: 58.4414, longitude: 1.8543, tdMd: 100, tdTvd: 90 }
 ];
 
 const trajectories = {
@@ -254,8 +255,8 @@ const monthlyStub = {
 if (scenario === 'empty') {
   wells.length = 0;
   wells.push(
-    { wellId: 9, name: 'no-coords', field: 'Volve' },
-    { wellId: 10, name: 'null-coords', field: 'Volve', latitude: null, longitude: null }
+    { wellId: 9, npdWellBoreCode: 9, name: 'no-coords', field: 'Volve' },
+    { wellId: 10, npdWellBoreCode: 10, name: 'null-coords', field: 'Volve', latitude: null, longitude: null }
   );
   trajectories[9] = [];
   trajectories[10] = [{ md: 0, latitude: null, longitude: null }];
@@ -276,6 +277,7 @@ globalThis.fetch = async (url) => {
 
   const match = /^\/api\/wells\/(\d+)\/trajectory$/.exec(url);
   if (match) {
+    // В стенде код НПД совпадает с wellId, поэтому ключи trajectories не меняются.
     const payload = trajectories[Number(match[1])];
     return payload === 'HTTP500' ? response({}, false) : response(payload ?? []);
   }

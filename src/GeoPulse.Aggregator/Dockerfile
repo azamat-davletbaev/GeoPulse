@@ -7,6 +7,7 @@ ARG configuration=Release
 WORKDIR /src
 
 COPY ["src/GeoPulse.Aggregator/GeoPulse.Aggregator.csproj", "src/GeoPulse.Aggregator/"]
+COPY ["src/GeoPulse.ClickHouse/GeoPulse.ClickHouse.csproj", "src/GeoPulse.ClickHouse/"]
 RUN dotnet restore "src/GeoPulse.Aggregator/GeoPulse.Aggregator.csproj"
 
 COPY . .

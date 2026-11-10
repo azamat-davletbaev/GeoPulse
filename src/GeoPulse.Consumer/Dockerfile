@@ -7,9 +7,10 @@ ARG configuration=Release
 WORKDIR /src
 
 # Контекст сборки — корень решения, пути ниже относительны корня.
-# Копируем только csproj, чтобы слой restore кэшировался отдельно от исходников.
+# Копируем только csproj нужных проектов, чтобы слой restore кэшировался отдельно от исходников.
 COPY ["src/GeoPulse.Consumer/GeoPulse.Consumer.csproj", "src/GeoPulse.Consumer/"]
 COPY ["src/GeoPulse.Infrastructure/GeoPulse.Infrastructure.csproj", "src/GeoPulse.Infrastructure/"]
+COPY ["src/GeoPulse.Messaging/GeoPulse.Messaging.csproj", "src/GeoPulse.Messaging/"]
 COPY ["src/GeoPulse.Core/GeoPulse.Core.csproj", "src/GeoPulse.Core/"]
 RUN dotnet restore "src/GeoPulse.Consumer/GeoPulse.Consumer.csproj"
 

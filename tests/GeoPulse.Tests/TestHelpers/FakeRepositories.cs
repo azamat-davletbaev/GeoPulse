@@ -23,15 +23,6 @@ internal sealed class FakeWellRepository : IWellRepository
 
     public Task<IReadOnlyList<WellLocation>> GetAllWithLocationsAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<WellLocation>>(_locations);
-
-    public Task AddRangeAsync(IEnumerable<Well> wells, CancellationToken cancellationToken = default)
-    {
-        _wells.AddRange(wells);
-        return Task.CompletedTask;
-    }
-
-    public Task<bool> ExistsAsync(int npdWellBoreCode, CancellationToken cancellationToken = default) =>
-        Task.FromResult(_wells.Any(well => well.NpdWellBoreCode == npdWellBoreCode));
 }
 
 /// <summary>In-memory подмена IWellTrajectoryRepository для контрактных тестов траекторий.</summary>
@@ -50,18 +41,9 @@ internal sealed class FakeWellTrajectoryRepository : IWellTrajectoryRepository
             _trajectories.OrderBy(item => item.Md).ToList());
 }
 
-/// <summary>In-memory подмена IDailyProductionRepository (в контрактных тестах не используется).</summary>
+/// <summary>In-memory подмена IDailyProductionRepository: пустые ответы для контрактных тестов.</summary>
 internal sealed class FakeDailyProductionRepository : IDailyProductionRepository
 {
-    public Task<DailyProduction?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
-        Task.FromResult<DailyProduction?>(null);
-
-    public Task<IReadOnlyList<DailyProduction>> GetAllAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<DailyProduction>>(Array.Empty<DailyProduction>());
-
-    public Task AddRangeAsync(IEnumerable<DailyProduction> items, CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
-
     public Task<PagedResult<DailyProduction>> GetPageAsync(int wellId, DailyProductionQuery query, CancellationToken cancellationToken = default) =>
         Task.FromResult(new PagedResult<DailyProduction>());
 
@@ -70,28 +52,45 @@ internal sealed class FakeDailyProductionRepository : IDailyProductionRepository
 
     public Task<ProductionCoverage?> GetCoverageAsync(int wellId, CancellationToken cancellationToken = default) =>
         Task.FromResult<ProductionCoverage?>(null);
-
-    public Task<bool> ExistsAsync(int wellId, DateOnly date, CancellationToken cancellationToken = default) =>
-        Task.FromResult(false);
 }
 
-/// <summary>In-memory подмена IMonthlyProductionReader для тестов ReportService и ReportsController.</summary>
+/// <summary>In-memory подмена IMonthlyProductionReader для тестов загрузки отчётов и аналитики.</summary>
 internal sealed class FakeMonthlyProductionReader : IMonthlyProductionReader
 {
-    private readonly IReadOnlyList<MonthlyProductionFlatDto> _monthly;
-    private readonly ProductionSummaryDto _summary;
+    private readonly IReadOnlyList<MonthlyProduction> _monthly;
+    private readonly ProductionSummary _summary;
 
     public FakeMonthlyProductionReader(
-        IEnumerable<MonthlyProductionFlatDto>? monthly = null,
-        ProductionSummaryDto? summary = null)
+        IEnumerable<MonthlyProduction>? monthly = null,
+        ProductionSummary? summary = null)
     {
-        _monthly = monthly?.ToList() ?? new List<MonthlyProductionFlatDto>();
-        _summary = summary ?? new ProductionSummaryDto();
+        _monthly = monthly?.ToList() ?? new List<MonthlyProduction>();
+        _summary = summary ?? new ProductionSummary();
     }
 
-    public Task<IReadOnlyList<MonthlyProductionFlatDto>> GetAllMonthlyAsync(CancellationToken cancellationToken = default) =>
+    public Task<IReadOnlyList<MonthlyProduction>> GetMonthlyByWellAsync(
+        int wellId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<MonthlyProduction>>(
+            _monthly.Where(item => item.WellId == wellId).ToList());
+
+    public Task<IReadOnlyList<MonthlyProduction>> GetAllMonthlyAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(_monthly);
 
-    public Task<ProductionSummaryDto> GetSummaryAsync(CancellationToken cancellationToken = default) =>
+    public Task<ProductionSummary> GetSummaryAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(_summary);
+}
+
+/// <summary>Подмена пробы БД для тестов /health: доступность задаётся в конструкторе.</summary>
+internal sealed class FakeDatabaseHealthProbe : IDatabaseHealthProbe
+{
+    private readonly bool _available;
+
+    public FakeDatabaseHealthProbe(bool available = true)
+    {
+        _available = available;
+    }
+
+    public Task<bool> CanConnectAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(_available);
 }

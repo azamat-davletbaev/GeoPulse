@@ -7,6 +7,7 @@ namespace GeoPulse.Tests.Integration;
 /// Каждый тест использует собственные топики и коды скважин, поэтому независим от остальных.
 /// </summary>
 [Collection("integration")]
+[Trait("Category", "Integration")]
 public sealed class ConsumerIdempotencyTests
 {
     private readonly GeoPulseContainersFixture _fixture;
@@ -113,6 +114,7 @@ public sealed class ConsumerIdempotencyTests
         Assert.Equal(1, await CountWellsAsync(npdCode));
         Assert.Equal(2, await CountTrajectoryPointsAsync(npdCode));
         Assert.Equal(1, await CountTrajectoryMetaAsync(npdCode));
+        Assert.Equal(1, await CountWellLocationsAsync(npdCode));
     }
 
     [Fact]
@@ -172,7 +174,18 @@ public sealed class ConsumerIdempotencyTests
             })
             .Build();
 
-        return new ProductionConsumerService(scopeFactory, config, NullLogger<ProductionConsumerService>.Instance, dlqProducer);
+        // DLQ-публикатор и резолв well_id подключаются так же, как в Program.cs консьюмера.
+        var dlq = new DlqPublisher(dlqProducer, NullLogger<DlqPublisher>.Instance);
+        var wellIds = new WellIdCache(_fixture.PostgresConnectionString);
+        var topics = new TopicProvisioner(NullLogger<TopicProvisioner>.Instance);
+
+        return new ProductionConsumerService(
+            scopeFactory,
+            config,
+            NullLogger<ProductionConsumerService>.Instance,
+            dlq,
+            wellIds,
+            topics);
     }
 
     private async Task<int> CountWellsAsync(int npdCode)
@@ -217,6 +230,18 @@ public sealed class ConsumerIdempotencyTests
         return await db.WellTrajectoryMeta.CountAsync(item => item.WellId == well.Id);
     }
 
+    private async Task<int> CountWellLocationsAsync(int npdCode)
+    {
+        await using var db = _fixture.CreateDbContext();
+        var well = await db.Wells.AsNoTracking().FirstOrDefaultAsync(w => w.NpdWellBoreCode == npdCode);
+        if (well is null)
+        {
+            return 0;
+        }
+
+        return await db.WellLocations.CountAsync(item => item.WellId == well.Id);
+    }
+
     private static async Task WaitUntilAsync(Func<Task<bool>> condition, int timeoutMilliseconds = 30_000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
@@ -258,6 +283,8 @@ public sealed class ConsumerIdempotencyTests
                     NpdWellBoreCode = npdCode,
                     TdMd = 3510.00,
                     TdTvd = 3138.06,
+                    SurfaceEasting = 435049.831,
+                    SurfaceNorthing = 6478560.825,
                     Points = new[]
                     {
                         new TrajectoryPointData

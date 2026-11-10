@@ -2,6 +2,8 @@
   <Folder Name="/src/">
     <Project Path="src/GeoPulse.Core/GeoPulse.Core.csproj" />
     <Project Path="src/GeoPulse.Infrastructure/GeoPulse.Infrastructure.csproj" />
+    <Project Path="src/GeoPulse.Messaging/GeoPulse.Messaging.csproj" />
+    <Project Path="src/GeoPulse.ClickHouse/GeoPulse.ClickHouse.csproj" />
     <Project Path="src/GeoPulse.Ingestion.Service/GeoPulse.Ingestion.Service.csproj" />
     <Project Path="src/GeoPulse.Aggregator/GeoPulse.Aggregator.csproj" />
     <Project Path="src/GeoPulse.Consumer/GeoPulse.Consumer.csproj" />

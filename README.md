@@ -1,7 +1,6 @@
 # GeoPulse
 
-[![CI](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/ci.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/ci.yml)
-[![CD — build & push to ghcr](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/deploy.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/deploy.yml)
+[![CI/CD](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/pipeline.yml)
 
 GeoPulse — демонстрационная веб-система мониторинга добычи нефти на открытых данных месторождения **Volve** (норвежский шельф, Северное море). Данные импортируются событийным пайплайном через Apache Kafka, точечные показатели хранятся в PostgreSQL, сырые события и помесячные агрегаты — в ClickHouse. Поверх этого работает REST API и статический веб-клиент: интерактивная карта скважин с траекториями стволов, графики добычи по скважине и месторождению, отчёты в Excel и CSV. Весь стек поднимается одной командой `docker compose up -d --build`, деплой на сервер — через GitHub Actions и Caddy с автоматическим TLS.
 
@@ -71,6 +70,5 @@ dotnet run --project src/GeoPulse.Ingestion.Service   # первичный им�
 
 ## Открытые вопросы
 
-1. **Скриншот.** В разделе описания стоит заглушка `docs/img/screenshot.png` — файла и каталога `docs/img/` в репозитории пока нет (готовые скриншоты лежат в `docs/screenshots/`). [УТОЧНИТЬ], какой снимок станет основным.
-2. **Ссылка на демо.** Публичный адрес развёрнутого стенда в README не указан (домен задаётся в `.env` как `DOMAIN`) — [УТОЧНИТЬ].
-3. **Страница «Прогноз».** Пункт меню и страница `web/forecast.html` есть, но `/api/Forecast/*` в WebAPI не реализован: страница показывает «Прогноз недоступен». Выносить ли её из навигации до появления ML-сервиса — [УТОЧНИТЬ].
+1. **Ссылка на демо.** Публичный адрес развёрнутого стенда в README не указан (домен задаётся в `.env` как `DOMAIN`) — [УТОЧНИТЬ].
+2. **Страница «Прогноз».** `web/forecast.html` уже в навигации, но `/api/Forecast/*` ещё не реализованы: страница показывает блок «Прогноз недоступен». Эндпоинты появятся в задаче по ML-прогнозу.

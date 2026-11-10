@@ -15,15 +15,6 @@ namespace GeoPulse.Infrastructure.Repositories
             Type = entity.Type
         };
 
-        public static WellEntity ToEntity(Well model) => new()
-        {
-            Id = model.Id,
-            NpdWellBoreCode = model.NpdWellBoreCode,
-            Name = model.Name,
-            Field = model.Field,
-            Type = model.Type
-        };
-
         public static WellLocation ToWellLocation(WellEntity entity) => new()
         {
             WellId = entity.Id,
@@ -65,26 +56,6 @@ namespace GeoPulse.Infrastructure.Repositories
             GasVol = entity.GasVol,
             WaterVol = entity.WaterVol,
             WaterInjectionVol = entity.WaterInjectionVol
-        };
-
-        public static DailyProductionEntity ToEntity(DailyProduction model) => new()
-        {
-            Id = model.Id,
-            WellId = model.WellId,
-            Date = model.Date,
-            OnStreamHrs = model.OnStreamHrs,
-            AvgDownholePressure = model.AvgDownholePressure,
-            AvgDownholeTemperature = model.AvgDownholeTemperature,
-            AvgDpTubing = model.AvgDpTubing,
-            AvgAnnulusPressure = model.AvgAnnulusPressure,
-            AvgChokeSize = model.AvgChokeSize,
-            AvgWhp = model.AvgWhp,
-            AvgWht = model.AvgWht,
-            DpChokeSize = model.DpChokeSize,
-            OilVol = model.OilVol,
-            GasVol = model.GasVol,
-            WaterVol = model.WaterVol,
-            WaterInjectionVol = model.WaterInjectionVol
         };
     }
 }

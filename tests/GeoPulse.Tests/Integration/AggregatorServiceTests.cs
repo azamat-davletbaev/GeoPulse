@@ -8,6 +8,7 @@ namespace GeoPulse.Tests.Integration;
 /// и что помесячные агрегаты пересчитываются после появления данных.
 /// </summary>
 [Collection("integration")]
+[Trait("Category", "Integration")]
 public sealed class AggregatorServiceTests
 {
     private readonly GeoPulseContainersFixture _fixture;

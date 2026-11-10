@@ -34,6 +34,8 @@
     <ProjectReference Include="..\..\src\GeoPulse.Consumer\GeoPulse.Consumer.csproj" />
     <ProjectReference Include="..\..\src\GeoPulse.CHIngest\GeoPulse.CHIngest.csproj" />
     <ProjectReference Include="..\..\src\GeoPulse.Aggregator\GeoPulse.Aggregator.csproj" />
+    <ProjectReference Include="..\..\src\GeoPulse.Messaging\GeoPulse.Messaging.csproj" />
+    <ProjectReference Include="..\..\src\GeoPulse.ClickHouse\GeoPulse.ClickHouse.csproj" />
     <ProjectReference Include="..\..\src\GeoPulse.WebAPI\GeoPulse.WebAPI.csproj" />
   </ItemGroup>
 

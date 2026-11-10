@@ -164,9 +164,10 @@ Assert-Equal 200 $byDateResponse.Status "GET /api/wells/$code/production/$date -
 $byDate = $byDateResponse.Body | ConvertFrom-Json
 Assert-Equal $date $byDate.date 'запись соответствует запрошенной дате'
 
-# 6b. Траектория ствола (этап 7): замеры в WGS84 и 404 для неизвестной скважины.
-$trajectoryResponse = Invoke-Api "/api/wells/$($wells[0].wellId)/trajectory"
-Assert-Equal 200 $trajectoryResponse.Status 'GET /api/wells/{wellId}/trajectory -> 200'
+# 6b. Траектория ствола: замеры в WGS84 и 404 для неизвестной скважины.
+# Ресурсы скважины адресуются кодом НПД (натуральный ключ), как и остальные эндпоинты.
+$trajectoryResponse = Invoke-Api "/api/wells/$($wells[0].npdWellBoreCode)/trajectory"
+Assert-Equal 200 $trajectoryResponse.Status 'GET /api/wells/{npdWellBoreCode}/trajectory -> 200'
 $trajectory = @($trajectoryResponse.Body | ConvertFrom-Json)
 Assert-True ($trajectory.Count -gt 0) "траектория содержит замеры (count=$($trajectory.Count))"
 Assert-True ($null -ne $trajectory[0].latitude -and $null -ne $trajectory[0].longitude) 'замеры траектории в WGS84 (latitude/longitude)'
@@ -209,12 +210,12 @@ Assert-True ($monthlyXlsx.ContentType -like 'application/vnd.openxmlformats-offi
 Assert-True ($monthlyXlsx.Disposition -like 'attachment*') 'monthly.xlsx: Content-Disposition attachment'
 Assert-True ($monthlyXlsx.Size -gt 0) "monthly.xlsx: непустое тело ($($monthlyXlsx.Size) байт)"
 
-$wellId = $wells[0].wellId
-$wellXlsx = Invoke-ApiDownload "/api/Reports/wells/$wellId.xlsx"
-Assert-Equal 200 $wellXlsx.Status "GET /api/Reports/wells/$wellId.xlsx -> 200"
-Assert-True ($wellXlsx.ContentType -like 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet*') 'wells/{wellId}.xlsx: content-type Excel'
-Assert-True ($wellXlsx.Disposition -like "attachment*well_$wellId*") "wells/{wellId}.xlsx: вложение с именем well_$wellId"
-Assert-True ($wellXlsx.Size -gt 0) "wells/{wellId}.xlsx: непустое тело ($($wellXlsx.Size) байт)"
+$wellCode = $wells[0].npdWellBoreCode
+$wellXlsx = Invoke-ApiDownload "/api/Reports/wells/$wellCode.xlsx"
+Assert-Equal 200 $wellXlsx.Status "GET /api/Reports/wells/$wellCode.xlsx -> 200"
+Assert-True ($wellXlsx.ContentType -like 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet*') 'wells/{code}.xlsx: content-type Excel'
+Assert-True ($wellXlsx.Disposition -like "attachment*well_$wellCode*") "wells/{code}.xlsx: вложение с именем well_$wellCode"
+Assert-True ($wellXlsx.Size -gt 0) "wells/{code}.xlsx: непустое тело ($($wellXlsx.Size) байт)"
 
 $unknownWellReport = Invoke-Api '/api/Reports/wells/999999.xlsx'
 Assert-Equal 404 $unknownWellReport.Status 'GET /api/Reports/wells/999999.xlsx (нет скважины) -> 404'

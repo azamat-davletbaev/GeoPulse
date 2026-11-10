@@ -12,7 +12,7 @@
 | `web/about.html`, `web/nav.js`, `web/common.js` | страница «О проекте», навигация, общие хелперы и палитра |
 | `src/GeoPulse.WebAPI/Controllers/*.cs` | маршруты, параметры, коды ответов |
 | `src/GeoPulse.WebAPI/Models/*.cs` | состав JSON-ответов |
-| `src/GeoPulse.WebAPI/ReportService.cs` | структура XLSX/CSV и формулы обводнённости и доли |
+| `src/GeoPulse.WebAPI/Reports/*` | структура XLSX/CSV (`XlsxReportWriter`, `CsvReportWriter`) и формулы обводнённости и доли (`ReportMetrics`) |
 | `src/GeoPulse.WebAPI/ClickHouseAnalyticsService.cs` | SQL, на котором считаются агрегаты |
 | `tests/smoke/webapi-smoke.ps1` | фактические проверки контракта (коды 200/400/404) |
 
@@ -27,14 +27,14 @@
 | Карта месторождения | Leaflet, подложка Esri World Light Gray Base (тайлы `services.arcgisonline.com`, до зума 16). Слой подписей мест подключается только при зуме ≥ 11. |
 | Вводный полёт | Старт в точке `[60.9, 8.6]`, зум 4 → перелёт к кусту скважин (зум 14) за 2600 мс. Один раз за сессию (ключ `geopulse.introSeen`). Данные карты скрыты до конца полёта (класс `data-pending`, fade-in 400 мс). |
 | Устья скважин | Маркеры по `latitude`/`longitude` из `GET /api/wells`; подписи колонкой (шаг 24 px) при зуме ≥ 13, потому что устья Volve лежат в пятне ~10 м. |
-| Траектории стволов | Линия по точкам `GET /api/wells/{wellId}/trajectory` (WGS84 приходит с сервера): янтарная линия с обводкой. Слои добавляются каскадом (не чаще одного за 150 мс), чтобы не блокировать карту. |
+| Траектории стволов | Линия по точкам `GET /api/wells/{npdWellBoreCode}/trajectory` (WGS84 приходит с сервера): янтарная линия с обводкой. Слои добавляются каскадом (не чаще одного за 150 мс), чтобы не блокировать карту. |
 | Забои | Кружок в последней точке траектории с подписью «забой, NNNN м» (MD последнего замера), при зуме ≥ 13. |
 | Выбор скважины | Клик по устью, линии или забою; при пересечении приоритет — устье → линия → забой (задан `z-index` слоёв). Повторный клик по той же скважине снимает выбор. Клик по пустому месту карты панель не закрывает. |
 | Автовыбор | После загрузки выбирается самая добывающая скважина (максимум суммарной нефти среди скважин с ненулевой добычей; при равенстве — первая по алфавиту). Один раз за загрузку страницы. |
 | Мобильная панель (< 768px) | Панель скважины — нижний лист 55dvh (`style.css`). При открытии куст центрируется в видимой части карты: `map.stop()` + `invalidateSize()` + `fitBounds(clusterBounds(), { paddingBottomRight: [20, offsetHeight панели + 20], maxZoom: 14 })`; при закрытии возвращается вид, сохранённый перед подгоном. Десктоп не затронут: вся логика под `matchMedia('(max-width: 768px)')`. |
 | График скважины | ECharts: помесячная добыча нефти (янтарная, с градиентной заливкой) и воды (голубая) из `GET /api/Analytics/monthly?wellId=`. Подписи оси X — по годам (не более 10 меток), полное `YYYY-MM` — только в тултипе. |
 | Сводка скважины | Месторождение; «Забой» (`tdTvd`) и «Длина ствола» (`tdMd`) из `GET /api/wells`; суммарная нефть; суммарная вода; обводнённость последнего месяца с добычей нефти; пик добычи нефти; период добычи; доля в добыче месторождения (знаменатель — `GET /api/Analytics/summary`). |
-| Кнопка «Скачать отчёт (Excel)» | Ссылка на `GET /api/Reports/wells/{wellId}.xlsx`. |
+| Кнопка «Скачать отчёт (Excel)» | Ссылка на `GET /api/Reports/wells/{npdWellBoreCode}.xlsx`. |
 | Список всех скважин | В правой панели, с суммарной добычей нефти; пункт выбирает скважину тем же механизмом, что клик по карте. |
 | Состояния загрузки | Скелетоны на время запросов, панель ошибки при сбое `GET /api/wells`. |
 | Точность чисел | Везде ровно 2 знака после запятой (`toLocaleString('ru-RU')`, `common.js`). |
@@ -55,7 +55,7 @@
 | --- | --- |
 | Переключатель области | «По месторождению» / «По скважине»; во втором режиме появляется `<select>` со списком скважин. |
 | Факт | Помесячная добыча нефти и воды (левая ось) и газа (правая ось) — те же `GET /api/wells` и `GET /api/Analytics/monthly`. |
-| Прогноз | Запрашиваются `GET /api/Forecast/field` или `GET /api/Forecast/wells/{wellId}`. **Этих эндпоинтов в WebAPI нет** (контроллера `Forecast` в `src/GeoPulse.WebAPI/Controllers` не существует), поэтому страница всегда показывает блок «Прогноз недоступен» с кнопкой «Повторить». Это заявленное поведение: `forecast.js` ловит ошибку и считает её ожидаемой. |
+| Прогноз | Запрашиваются `GET /api/Forecast/field` или `GET /api/Forecast/wells/{wellId}`. **Этих эндпоинтов в WebAPI пока нет** (контроллера `Forecast` в `src/GeoPulse.WebAPI/Controllers` не существует), поэтому страница показывает блок «Прогноз недоступен» с кнопкой «Повторить». Это заявленное поведение: `forecast.js` ловит ошибку и считает её ожидаемой. Страница оставлена как заготовка под ML-сервис. |
 | «План внедрения прогноза» | Статическая карточка под графиком (`forecast.html`, класс `card plan`): XGBoost с лаговыми признаками, офлайн-обучение в Python (train 2008–2015 + holdout, MAE/MAPE), ONNX в рантайме WebAPI через `Microsoft.ML.OnnxRuntime`, эндпоинт `/api/forecast`; на графике факт дополняется пунктирным прогнозом на полгода. Текст не зависит от API, `forecast.js` этот блок не трогает. |
 
 ### 1.4 Страница «О проекте» (`/about.html`)
@@ -78,7 +78,7 @@
 | --- | --- | --- | --- | --- |
 | GET | `/health` | — | `HealthResponse`: `status` (`ok`/`degraded`), `database` (`up`/`down`), `checkedAtUtc` | 503 при недоступной БД |
 | GET | `/api/wells` | — | `WellDto[]`: `wellId`, `npdWellBoreCode`, `name`, `field`, `type`, `latitude`, `longitude`, `tdMd`, `tdTvd` | — |
-| GET | `/api/wells/{wellId:int}/trajectory` | `wellId` — внутренний id (`wells.id`) | `TrajectoryPointDto[]`: `md`, `tvd`, `inclination`, `azimuth`, `latitude`, `longitude` (WGS84) | 404, если скважины нет |
+| GET | `/api/wells/{npdWellBoreCode:int}/trajectory` | `npdWellBoreCode` — код ствола в НПД | `TrajectoryPointDto[]`: `md`, `tvd`, `inclination`, `azimuth`, `latitude`, `longitude` (WGS84) | 404, если скважины нет |
 | GET | `/api/wells/{npdWellBoreCode:int}` | `npdWellBoreCode` — код НПД | `WellDetailsDto`: `npdWellBoreCode`, `name`, `field`, `type`, `firstProductionDate`, `lastProductionDate`, `productionDays` | 404 |
 | GET | `/api/wells/{npdWellBoreCode:int}/production` | `from`, `to` (`yyyy-MM-dd`), `page` (≥ 1, по умолчанию 1), `pageSize` (1..500, по умолчанию 100), `sort` (`desc` по умолчанию / `asc`) | `PagedResponse<ProductionRecordDto>`: `items`, `totalCount`, `page`, `pageSize`, `totalPages`, `hasNextPage`, `hasPreviousPage` | 400 (невалидные параметры), 404 (скважина не найдена) |
 | GET | `/api/wells/{npdWellBoreCode:int}/production/{date}` | `date` (`yyyy-MM-dd`) | `ProductionRecordDto` | 400 (дата не парсится), 404 (нет записи) |
@@ -86,7 +86,7 @@
 | GET | `/api/Analytics/summary` | — | `ProductionSummaryDto`: `totalOilVol`, `totalGasVol`, `totalWaterVol`, `totalWaterInjectionVol`, `totalOnStreamHrs`, `totalDays` | — |
 | GET | `/api/Reports/monthly.xlsx` | — | файл `monthly_YYYY-MM-DD.xlsx`, листы «Сводка», «Помесячно», «По скважинам» | — |
 | GET | `/api/Reports/monthly.csv` | — | файл `monthly_YYYY-MM-DD.csv`, `text/csv`, UTF-8 с BOM | — |
-| GET | `/api/Reports/wells/{wellId:int}.xlsx` | `wellId` — внутренний id | файл `well_{wellId}_YYYY-MM-DD.xlsx`, листы «Скважина», «Помесячно» | 404 |
+| GET | `/api/Reports/wells/{npdWellBoreCode:int}.xlsx` | `npdWellBoreCode` — код ствола в НПД | файл `well_{npdWellBoreCode}_YYYY-MM-DD.xlsx`, листы «Скважина», «Помесячно» | 404 |
 | GET | `/swagger`, `/swagger/v1/swagger.json` | — | Swagger UI и контракт OpenAPI (включён во всех окружениях) | — |
 
 Дополнительно WebAPI раздаёт статику из `web/`: `/` (index), `/reports.html`, `/forecast.html`, `/about.html`, `/style.css`, `/app.js` и т. д.
@@ -201,7 +201,7 @@ FROM gp.monthly_production
 | WaterCut, % | `вода / (нефть + вода) × 100`, при `нефть + вода ≤ 0` → `0` | XLSX-лист «Помесячно», CSV-колонка `WaterCutPct`, сводка скважины на карте |
 | Доля в добыче месторождения, % | `нефть_скважины / totalOilVol × 100`, при `totalOilVol ≤ 0` → `0` | XLSX «По скважинам» и «Скважина», сводка скважины на карте |
 
-На сервере (`ReportService.LoadAsync`) месячные строки отчёта собираются группировкой «плоских» агрегатов по (`Year`, `Month`): `oil = Σ oilVolSum`, `water = Σ waterVolSum` по всем скважинам, затем `WaterCutPct(oil, water)`. Отчёт по скважине (`LoadWellAsync`) группирует те же данные по `wellId`, суммирует и считает `SharePct(wellOil, summary.TotalOilVol)`.
+На сервере (`ReportDataLoader.LoadAsync`) месячные строки отчёта собираются в `ReportMetrics.BuildMonthlyRows` группировкой помесячных агрегатов по (`Year`, `Month`): `oil = Σ oilVolSum`, `water = Σ waterVolSum` по всем скважинам, затем `WaterCutPct(oil, water)`. Отчёт по скважине (`LoadWellAsync`) фильтрует те же данные по скважине, суммирует и считает `SharePct(wellOil, summary.TotalOilVol)`.
 
 На клиенте (`web/app.js`) обводнённость в панели считается за **последний месяц, в котором была добыча нефти** (`oilVolSum > 0`); пик — месяц с максимальным `oilVolSum`; период — от первого до последнего месяца с добычей нефти.
 
@@ -217,7 +217,7 @@ FROM gp.monthly_production
 
 **`GET /api/Reports/monthly.csv`**: `Year,Month,OilVol,WaterVol,WaterCutPct`, UTF-8 с BOM, разделитель — запятая, числа в `0.00` (InvariantCulture).
 
-**`GET /api/Reports/wells/{wellId}.xlsx`**:
+**`GET /api/Reports/wells/{npdWellBoreCode}.xlsx`**:
 
 | Лист | Содержимое |
 | --- | --- |
@@ -228,9 +228,9 @@ FROM gp.monthly_production
 
 ## 4. Открытые вопросы
 
-1. **Страница «Прогноз» без бэкенда.** `web/forecast.js` обращается к `/api/Forecast/field` и `/api/Forecast/wells/{wellId}`, но контроллера нет. Планируется ли ML-сервис и в каком контракте — [УТОЧНИТЬ].
-2. **Периоды и фильтры в UI.** API умеет `from`/`to`/`sort`/`page`, но клиент это не использует. Нужны ли фильтры на карте и отчётах — [УТОЧНИТЬ].
-3. **`null` → `0` в ClickHouse.** Из-за этого «нет данных» и «ноль» неразличимы в аналитике: например, `days_count` учитывает все строки, а `avg_*` поля отсутствующих значений дают `0`, а не пропуск. Приемлемо ли это для отчётности — [УТОЧНИТЬ].
-4. **`/health` не проверяет ClickHouse и Kafka.** Страница может вернуть 200 при недоступной аналитике (тогда `/api/Analytics/*` падает с 500). Нужны ли отдельные пробы — [УТОЧНИТЬ].
-5. **Число 526 агрегатов и 15 634 строки** подтверждены на текущем стенде (`count()` по `gp.monthly_production` и `gp.production_daily`/`daily_production`). Совпадут ли они на другой версии датасета Volve — [УТОЧНИТЬ].
-6. **Отчёт по скважине адресуется `wellId`, а суточная добыча — `npdWellBoreCode`.** Два разных идентификатора в одном API (`/api/Reports/wells/{wellId}.xlsx` против `/api/wells/{npdWellBoreCode}`). Осознанная ли это асимметрия (совместимость со старым контрактом) — [УТОЧНИТЬ].
+1. **Периоды и фильтры в UI.** API умеет `from`/`to`/`sort`/`page`, но клиент это не использует. Нужны ли фильтры на карте и отчётах — [УТОЧНИТЬ].
+2. **`null` → `0` в ClickHouse.** Из-за этого «нет данных» и «ноль» неразличимы в аналитике: например, `days_count` учитывает все строки, а `avg_*` поля отсутствующих значений дают `0`, а не пропуск. Приемлемо ли это для отчётности — [УТОЧНИТЬ].
+3. **`/health` не проверяет ClickHouse и Kafka.** Страница может вернуть 200 при недоступной аналитике (тогда `/api/Analytics/*` падает с 500). Нужны ли отдельные пробы — [УТОЧНИТЬ].
+4. **Число 526 агрегатов и 15 634 строки** подтверждены на текущем стенде (`count()` по `gp.monthly_production` и `gp.production_daily`/`daily_production`). Совпадут ли они на другой версии датасета Volve — [УТОЧНИТЬ].
+5. **`Analytics` принимает два идентификатора.** `/api/Analytics/monthly` поддерживает и `wellId`, и `wellCode` (прежний контракт); остальные ресурсы скважины адресуются только кодом НПД. Нужно ли оставить `wellId` в аналитике — [УТОЧНИТЬ].
+6. **Страница «Прогноз» — заготовка.** `web/forecast.js` обращается к `/api/Forecast/field` и `/api/Forecast/wells/{wellId}`, но контроллера нет: страница показывает «Прогноз недоступен». Эндпоинты и контракт появятся в задаче по ML-прогнозу; удалять страницу не планируется.

@@ -9,7 +9,7 @@
 | `deploy.sh` | все шаги деплоя, health-check, механизм отката |
 | `docker-compose.prod.yml` | имена контейнеров, переменные, healthcheck'и |
 | `Caddyfile` | домены входа и проксирование |
-| `.github/workflows/deploy.yml` | автоматический деплой по SSH, теги образов |
+| `.github/workflows/pipeline.yml` | автоматический деплой по SSH, теги образов |
 | `.env.example` | обязательные переменные |
 | `scripts/bootstrap-server.sh` | подготовка сервера, UFW, `.env`, первый деплой |
 | `scripts/backup-pg.sh` | дамп и ротация |
@@ -103,9 +103,10 @@ $COMPOSE exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'select 
 
 ### 2.1 Как запускается автоматически
 
-1. Пуш в `main` → workflow `.github/workflows/deploy.yml` (имя `CD — build & push to ghcr`).
-2. Job `build-and-push` собирает 5 образов (`webapi`, `consumer`, `chingest`, `aggregator`, `ingestion`) и публикует в ghcr.io с двумя тегами: короткий SHA (`${GITHUB_SHA::7}`) и `latest`.
-3. Job `deploy` (только для `main`, с `concurrency: production-deploy`) по SSH (`appleboy/ssh-action@v1.2.0`) выполняет на сервере:
+1. Пуш в `main` (или ручной запуск `workflow_dispatch`) → единый workflow `.github/workflows/pipeline.yml` (имя `CI/CD Pipeline`).
+2. Jobs `build-and-test` (сборка solution, `dotnet format --verify-no-changes`, проверка EF-модели, `dotnet test`) и `frontend-check` (`node tests/frontend/webapp-check.js mixed` и `... empty`) должны завершиться успешно.
+3. Job `build-and-push` объявляет `needs: [build-and-test, frontend-check]`, поэтому образы (`webapi`, `consumer`, `chingest`, `aggregator`, `ingestion`) собираются только после зелёных тестов, и публикуются в ghcr.io с двумя тегами: короткий SHA (`${GITHUB_SHA::7}`) и `latest`.
+4. Job `deploy` (`needs: [build-and-push]`, только для `main`, с `concurrency: production-deploy`) по SSH (`appleboy/ssh-action@v1.2.0`) выполняет на сервере:
 
 ```bash
 export IMAGE_TAG="<короткий SHA>"
@@ -115,7 +116,7 @@ bash ./deploy.sh
 
 Секреты репозитория: `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` (порт в workflow жёстко `22`, таймаут 20 минут, `script_stop: true`).
 
-Параллельно workflow `.github/workflows/ci.yml` (`CI`) на каждый push/PR в `main` собирает solution, гоняет `dotnet test` и проверку фронтенда (`node tests/frontend/webapp-check.js mixed` и `... empty`).
+Тот же workflow на каждый push/PR в `main` сначала собирает solution, гоняет `dotnet test` и проверку фронтенда (`node tests/frontend/webapp-check.js mixed` и `... empty`). На PR пайплайн на этом останавливается: jobs `build-and-push` и `deploy` ограничены условием `github.event_name != 'pull_request'`.
 
 ### 2.2 Что делает `deploy.sh` (10 шагов)
 
@@ -204,6 +205,7 @@ curl -fsS https://<DOMAIN>/api/Analytics/summary
 | Что видно | Причина | Действие |
 | --- | --- | --- |
 | `wells` и `daily_production` пусты | ingestion ни разу не запускался | `docker compose -f docker-compose.prod.yml run --rm ingestion` (профиль `init`, в постоянный состав не входит) |
+| `geopulse-consumer` сразу `Exited`, в логах `ConsumeException: Subscribed topic not available` | в Kafka нет топика `production-daily`: подписка консьюмера топик не создаёт (KIP-361) | топик создаёт сам консьюмер при старте (ADR-015); если образ старый — `docker compose up -d --build consumer`, либо вручную: `kafka-topics.sh --bootstrap-server localhost:29092 --create --topic production-daily --partitions 1 --replication-factor 1 --if-not-exists` |
 | PostgreSQL заполнен, ClickHouse пуст | `chingest`/`aggregator` не работали или упали | `logs chingest`, `logs aggregator`, затем перезапустить оба |
 | `monthly_production` пуст, `production_daily` заполнен | агрегатор не успел отработать или упал | `logs aggregator`; он пересчитывает на старте и далее каждые 60 с |
 | `/api/Analytics/summary` отдаёт нули | агрегат пересчитан по пустым данным | проверить `select count() from gp.production_daily` |
@@ -296,6 +298,6 @@ docker exec -i geopulse-postgres pg_restore -U <POSTGRES_USER> -d <POSTGRES_DB> 
 2. **Куда складывать бэкапы вне сервера** — регламента нет (S3 / rsync / второй сервер). [УТОЧНИТЬ].
 3. **Бэкап ClickHouse.** Отдельного скрипта нет; предполагается восстановление переигрыванием Kafka и пересборкой агрегатов, но проверялся ли такой сценарий — [УТОЧНИТЬ].
 4. **Тома Kafka.** В `docker-compose.prod.yml` для Kafka не объявлен именованный том (в отличие от `pgdata`, `chdata`, `caddy_data`, `caddy_config`), поэтому данные брокера живут в анонимном томе контейнера и теряются при пересоздании контейнера. Осознанно ли это (данные переигрываются из ingestion) — [УТОЧНИТЬ].
-5. **Порт SSH.** `deploy.yml` жёстко использует `port: 22`, хотя `bootstrap-server.sh` принимает `SSH_PORT` и открывает его в UFW. Если SSH на сервере не на 22, деплой из CI не пройдёт — [УТОЧНИТЬ], нужно ли выносить порт в секрет.
+5. **Порт SSH.** `pipeline.yml` (job `deploy`) жёстко использует `port: 22`, хотя `bootstrap-server.sh` принимает `SSH_PORT` и открывает его в UFW. Если SSH на сервере не на 22, деплой из CI не пройдёт — [УТОЧНИТЬ], нужно ли выносить порт в секрет.
 6. **Мониторинг.** Алертов по `/health`, размеру DLQ и свободному месту на диске нет — только проверки внутри `deploy.sh` в момент релиза. Нужен ли внешний uptime-мониторинг — [УТОЧНИТЬ].
 7. **Откат миграций.** Механизм отката меняет только тег образа; `Down`-миграции не запускаются. Регламент для несовместимых миграций — [УТОЧНИТЬ].

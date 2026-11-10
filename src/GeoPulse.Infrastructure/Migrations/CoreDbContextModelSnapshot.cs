@@ -97,49 +97,6 @@ namespace GeoPulse.Infrastructure.Migrations
                     b.ToTable("daily_production", (string)null);
                 });
 
-            modelBuilder.Entity("GeoPulse.Infrastructure.Entities.MonthlyProductionEntity", b =>
-                {
-                    b.Property<int>("WellId")
-                        .HasColumnType("integer")
-                        .HasColumnName("well_id");
-
-                    b.Property<int>("Year")
-                        .HasColumnType("integer")
-                        .HasColumnName("year");
-
-                    b.Property<int>("Month")
-                        .HasColumnType("integer")
-                        .HasColumnName("month");
-
-                    b.Property<int>("DaysCount")
-                        .HasColumnType("integer")
-                        .HasColumnName("days_count");
-
-                    b.Property<double>("GasVolSum")
-                        .HasColumnType("double precision")
-                        .HasColumnName("gas_vol_sum");
-
-                    b.Property<double>("OilVolSum")
-                        .HasColumnType("double precision")
-                        .HasColumnName("oil_vol_sum");
-
-                    b.Property<double>("OnStreamHrsSum")
-                        .HasColumnType("double precision")
-                        .HasColumnName("on_stream_hrs_sum");
-
-                    b.Property<double>("WaterInjectionVolSum")
-                        .HasColumnType("double precision")
-                        .HasColumnName("water_injection_vol_sum");
-
-                    b.Property<double>("WaterVolSum")
-                        .HasColumnType("double precision")
-                        .HasColumnName("water_vol_sum");
-
-                    b.HasKey("WellId", "Year", "Month");
-
-                    b.ToTable("monthly_production", "analytics");
-                });
-
             modelBuilder.Entity("GeoPulse.Infrastructure.Entities.WellEntity", b =>
                 {
                     b.Property<int>("Id")

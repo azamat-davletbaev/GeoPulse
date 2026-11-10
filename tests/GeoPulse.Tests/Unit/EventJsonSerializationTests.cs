@@ -132,4 +132,40 @@ public sealed class EventJsonSerializationTests
         Assert.Equal(5351, evt.Data.NpdWellBoreCode);
         Assert.Equal(1.5, evt.Data.OilVol);
     }
+
+    [Fact]
+    public void TrajectoryEvent_RoundTrips_SurfaceCoordinatesPreserved()
+    {
+        var original = new TrajectoryEvent
+        {
+            Data = new TrajectoryData
+            {
+                NpdWellBoreCode = 5351,
+                TdMd = 3510.00,
+                TdTvd = 3138.06,
+                SurfaceEasting = 435049.831,
+                SurfaceNorthing = 6478560.825,
+                Points = new[]
+                {
+                    new TrajectoryPointData
+                    {
+                        Md = 145.90,
+                        Tvd = 145.90,
+                        Inclination = 0.0,
+                        Azimuth = 0.0,
+                        Easting = 435049.831,
+                        Northing = 6478560.825
+                    }
+                }
+            }
+        };
+
+        var json = JsonSerializer.Serialize(original, MessagingJson.Options);
+        var restored = JsonSerializer.Deserialize<TrajectoryEvent>(json, MessagingJson.Options)!;
+
+        Assert.Equal(EventTypes.Trajectory, restored.EventType);
+        Assert.Equal(EventTypes.SchemaVersion, restored.SchemaVersion);
+        Assert.Equal(435049.831, restored.Data.SurfaceEasting);
+        Assert.Equal(6478560.825, restored.Data.SurfaceNorthing);
+    }
 }

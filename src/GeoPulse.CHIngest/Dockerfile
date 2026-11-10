@@ -7,6 +7,9 @@ ARG configuration=Release
 WORKDIR /src
 
 COPY ["src/GeoPulse.CHIngest/GeoPulse.CHIngest.csproj", "src/GeoPulse.CHIngest/"]
+COPY ["src/GeoPulse.Infrastructure/GeoPulse.Infrastructure.csproj", "src/GeoPulse.Infrastructure/"]
+COPY ["src/GeoPulse.Messaging/GeoPulse.Messaging.csproj", "src/GeoPulse.Messaging/"]
+COPY ["src/GeoPulse.ClickHouse/GeoPulse.ClickHouse.csproj", "src/GeoPulse.ClickHouse/"]
 COPY ["src/GeoPulse.Core/GeoPulse.Core.csproj", "src/GeoPulse.Core/"]
 RUN dotnet restore "src/GeoPulse.CHIngest/GeoPulse.CHIngest.csproj"
 

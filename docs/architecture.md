@@ -12,7 +12,10 @@
 | `src/GeoPulse.Consumer/ProductionConsumerService.cs`, `Program.cs` | чтение Kafka, SQL-запись в PostgreSQL, DLQ |
 | `src/GeoPulse.CHIngest/CHIngestService.cs` | DDL ClickHouse, чтение Kafka, резолв `npdWellBoreCode → well_id` |
 | `src/GeoPulse.Aggregator/AggregatorService.cs` | агрегация `production_daily → monthly_production` |
-| `src/GeoPulse.WebAPI/*` (`Program.cs`, контроллеры, `ClickHouseAnalyticsService.cs`, `ReportService.cs`) | что читает API, из какого хранилища |
+| `src/GeoPulse.Messaging/*` (`EventClassifier`, `DlqPublisher`) | единый разбор сообщений и формат DLQ для обоих читателей |
+| `src/GeoPulse.ClickHouse/ClickHouseSchema.cs` | DDL базы `gp` и её таблиц — один источник для CHIngest и Aggregator |
+| `src/GeoPulse.Infrastructure/WellIds/WellIdCache.cs` | резолв `npdWellBoreCode → well_id` с кэшем (общий для Consumer и CHIngest) |
+| `src/GeoPulse.WebAPI/Analytics/*`, `Reports/*`, `Health/*`, контроллеры | что читает API, из какого хранилища |
 | `src/GeoPulse.Core/Events/*` | конверт и поля событий, `schemaVersion`, причины DLQ |
 | `Caddyfile`, `.github/workflows/*.yml` | входная точка TLS и CI/CD |
 
@@ -38,20 +41,7 @@ flowchart LR
     CADDY[Caddy] -->|"reverse_proxy webapi:5146"| API
 ```
 
-Текстовый эквивалент (для терминала):
-
-```
-Excel + WITSML-текст
-        │
-        ▼
-Ingestion.Service ──► Kafka "production-daily" ──┬──► Consumer ──► PostgreSQL geopulse_core
-                                                  ├──► CHIngest ──► ClickHouse gp
-                                                  └──► "production-daily-dlq" (ошибки)
-
-ClickHouse gp.production_daily ──► Aggregator (таймер 60 с) ──► gp.monthly_production
-ClickHouse gp.monthly_production ──► WebAPI (/api/Analytics/*, /api/Reports/*)
-PostgreSQL public.* ──► WebAPI (/api/wells*)
-```
+Текстовый эквивалент — в `README.md` (раздел «Архитектура»); здесь диаграмма не дублируется.
 
 ## 2. Сервисы: что читает, что пишет, зачем существует
 
@@ -59,7 +49,7 @@ PostgreSQL public.* ──► WebAPI (/api/wells*)
 | --- | --- | --- | --- |
 | `GeoPulse.Ingestion.Service` | Excel `data/Volve_Production_data/Volve production data.xlsx` (лист `Daily Production Data`), текстовые файлы `data/Volve_Well_technical_data/WellWellbore/**/*_ACTUAL` | Kafka-топик `production-daily` | Единственное место, где разбирается «сырой» датасет Volve. В БД не пишет вообще: его задача — превратить файлы в события. Запускается одноразово (`profiles: ["init"]` в `docker-compose.prod.yml`, `docker compose run --rm ingestion`). |
 | `GeoPulse.Consumer` | Kafka `production-daily` (группа `geopulse-consumer`), `Kafka:BatchSize` (по умолчанию 500) | PostgreSQL: `wells` (upsert по `npd_well_bore_code`), `daily_production` (`ON CONFLICT (well_id, date) DO NOTHING`), `well_trajectories` (`ON CONFLICT (well_id, md) DO NOTHING`), `well_trajectory_meta` (upsert по `well_id`); Kafka `production-daily-dlq` | «Точечное» хранилище: на старте сам применяет EF Core миграции (`db.Database.MigrateAsync`), затем идемпотентно переносит события в PostgreSQL. |
-| `GeoPulse.CHIngest` | Kafka `production-daily` (группа `geopulse-chingest`), PostgreSQL `wells` (`SELECT npd_well_bore_code, id FROM wells` — кэш на старте, догрузка по одному неизвестному коду) | ClickHouse: `gp.wells`, `gp.production_daily` (движок `ReplacingMergeTree`); Kafka `production-daily-dlq` | Второй независимый читатель того же топика: складывает сырые суточные события в колоночную БД для аналитики. События `well.trajectory` распознаёт, но в ClickHouse не пишет (геометрия — не таймсерия). Сам создаёт базу `gp` и таблицы через `CREATE ... IF NOT EXISTS`. |
+| `GeoPulse.CHIngest` | Kafka `production-daily` (группа `geopulse-chingest`), PostgreSQL `wells` через общий `WellIdCache` (первый запрос читает справочник целиком, промах уточняется точечным `SELECT id`) | ClickHouse: `gp.wells`, `gp.production_daily` (движок `ReplacingMergeTree`); Kafka `production-daily-dlq` | Второй независимый читатель того же топика: складывает сырые суточные события в колоночную БД для аналитики. События `well.trajectory` распознаёт, но в ClickHouse не пишет (геометрия — не таймсерия). Схему создаёт через `ClickHouseSchema.EnsureAsync`. |
 | `GeoPulse.Aggregator` | ClickHouse `gp.production_daily FINAL` | ClickHouse `gp.monthly_production` (`TRUNCATE` + `INSERT ... SELECT ... GROUP BY well_id, year, month`) | Считает помесячные агрегаты без инкрементального состояния: полный пересбор на старте и далее по `PeriodicTimer` каждые `RecalcIntervalSeconds` (по умолчанию 60 с). В Kafka и PostgreSQL не ходит. |
 | `GeoPulse.WebAPI` | PostgreSQL: `wells`, `well_locations`, `well_trajectory_meta`, `daily_production`, `well_trajectories`; ClickHouse `gp.monthly_production` | Ничего (read-only); отдаёт статику `web/` (`UseStaticFiles`) и `/swagger` | Единая точка входа для клиента: REST API + раздача фронтенда. |
 | `postgres` (`postgres:17-alpine`) | — | — | Точечные данные, справочники, уникальные ограничения. |
@@ -71,6 +61,16 @@ PostgreSQL public.* ──► WebAPI (/api/wells*)
 ### 2.1 Почему ingestion не пишет в БД
 
 `IngestionService` вообще не содержит ссылки на `GeoPulse.Infrastructure` (см. `GeoPulse.Ingestion.Service.csproj` — только `GeoPulse.Core`, `Confluent.Kafka`, `ExcelDataReader`). Это осознанное разделение: парсер знает только формат файлов и формат событий, а схему БД знают потребители. Отсюда же следует, что повторный запуск ingestion безопасен и не требует миграций.
+
+### 2.2 Общие библиотеки (без дублирования между сервисами)
+
+| Библиотека | Что внутри | Кто использует |
+| --- | --- | --- |
+| `GeoPulse.Messaging` | `EventClassifier` (разбор конверта: `eventType`/`schemaVersion`, десериализация данных, причина отбраковки) и `DlqPublisher` (публикация в DLQ с заголовками `reason`/`source-topic`) | `Consumer`, `CHIngest` |
+| `GeoPulse.ClickHouse` | `ClickHouseSchema`: DDL базы `gp` и трёх таблиц + идемпотентное `EnsureAsync` | `CHIngest`, `Aggregator`, `WebAPI` (имена таблиц), тесты |
+| `GeoPulse.Infrastructure/WellIds` | `WellIdCache` — реализация `IWellIdResolver` (кэш положительных результатов, промах уточняется запросом) | `Consumer`, `CHIngest` |
+
+До выноса этих библиотек `Classify`, публикация в DLQ, DDL ClickHouse и резолв `well_id` были скопированы в двух сервисах; одна и та же ситуация могла помечаться в DLQ по-разному.
 
 ## 3. Почему два хранилища: PostgreSQL и ClickHouse
 
@@ -100,7 +100,9 @@ PostgreSQL public.* ──► WebAPI (/api/wells*)
 
 Что даёт ClickHouse: `sum()` по всем строкам за всё время одним запросом, пересборка агрегата одной командой, `ReplacingMergeTree` + чтение `FINAL` вместо ручной дедупликации повторов из топика. В PostgreSQL пришлось бы либо держать агрегаты вручную, либо считать `GROUP BY` по `daily_production` на каждый запрос.
 
-**Схема `analytics.monthly_production` в PostgreSQL.** Миграция `20261102115807_AddMonthlyProductionAnalytics` создаёт её, и `AnalyticsRepository` умеет её читать, но `AddGeoPulseInfrastructure` регистрирует репозиторий «впрок»: ни один контроллер `IAnalyticsRepository` не использует. Фактически аналитика отдаётся из ClickHouse — см. `AnalyticsController` (зависимость `ClickHouseAnalyticsService`) и `ReportService` (зависимость `IMonthlyProductionReader`). Схема остаётся замороженным снимком для сверок: код её не пишет.
+**Аналитика только в ClickHouse.** Единственный источник помесячных агрегатов — `gp.monthly_production`. Читает его `ClickHouseAnalyticsService` (реализация порта `IMonthlyProductionReader`), от которого зависят `AnalyticsController` (отдаёт DTO) и `ReportDataLoader` (данные отчётов). PostgreSQL-схема `analytics` из ранней версии удалена миграцией `DropUnusedAnalyticsMonthlyProduction` — код её никогда не читал и не писал.
+
+**Слои API.** `WebAPI` разделён по ответственности: `Analytics/` — порт и реализация чтения агрегатов, `Reports/` — `ReportDataLoader` (данные + метрики через `ReportMetrics`) и два генератора форматов (`XlsxReportWriter`, `CsvReportWriter`), `Health/` — проба БД для `/health`, `Models/Api` и `Models/Reports` — контракты ответов и внутренние модели отчётов соответственно.
 
 ## 4. Почему Kafka как шина
 
@@ -134,6 +136,8 @@ Kafka здесь решает три конкретные задачи, кото
 | `production-daily-dlq` | `Consumer`, `CHIngest` | автоматических читателей нет — разбирается вручную (Kafka UI / `kafka-console-consumer`) | те же правила автосоздания |
 
 Третьего топика нет: все три типа событий (`well.registered`, `well.trajectory`, `production.daily`) идут в **один** топик `production-daily` — так их порядок внутри скважины гарантирован. `deploy.sh` создаёт оба топика идемпотентно (`--if-not-exists`).
+
+**Кто создаёт топик данных.** Кроме `deploy.sh`, топик `production-daily` создаёт сам консьюмер при старте (`GeoPulse.Messaging.TopicProvisioner`, вызывается из `Consumer` и `CHIngest`): подписка на отсутствующий топик возвращает `UNKNOWN_TOPIC_OR_PARTITION`, а Kafka с KIP-361 не создаёт топик по запросу метаданных консьюмера — ни `KAFKA_AUTO_CREATE_TOPICS_ENABLE`, ни `allow.auto.create.topics` этого не исправляют. Поэтому порядок запуска «ingestion → консьюмеры» больше не обязателен: при первом старте топик создаётся с числом партиций из `Kafka:TopicPartitions` (по умолчанию 1) и `Kafka:ReplicationFactor` (по умолчанию 1), а если топик уже есть — логируется «уже существует». Топик `production-daily-dlq` появляется от продюсера DLQ при первом ошибочном сообщении.
 
 ### 4.3 Ключ сообщения и партиционирование
 
@@ -232,7 +236,7 @@ producer.Produce(topic, new Message<string, string> { Key = key, Value = value }
 
 ## 5. Топология запуска
 
-**Локально (`docker-compose.yml`)** — 6 сервисов: `postgres` (5432), `clickhouse` (8123, 9000), `kafka` (9092), `kafka-ui` (8080), `consumer` (собирается из `src/GeoPulse.Consumer/Dockerfile`), `webapi` (5146, собирается из `src/GeoPulse.WebAPI/Dockerfile`). `chingest`, `aggregator`, `ingestion` и `caddy` в локальный compose **не входят** — они запускаются с хоста через `dotnet run` (см. `docs/development.md`).
+**Локально (`docker-compose.yml`)** — 8 сервисов: `postgres` (5432), `clickhouse` (8123, 9000), `kafka` (9092, healthcheck), `kafka-ui` (8080), `consumer`, `chingest`, `aggregator` и `webapi` (5146). Все четыре .NET-сервиса собираются из локальных исходников (`build:`), учётные данные зашиты в сам файл (`geopulse`/`geopulse`, БД `geopulse_core` и `gp`), `.env` не нужен; сервисы стартуют по `depends_on: service_healthy` (postgres/clickhouse/kafka). `ingestion` и `caddy` в локальный compose **не входят** — данные импортируются с хоста (`dotnet run --project src/GeoPulse.Ingestion.Service`), TLS локально не нужен.
 
 **Прод (`docker-compose.prod.yml`)** — 8 постоянных сервисов: `postgres`, `kafka`, `clickhouse`, `consumer`, `chingest`, `aggregator`, `webapi`, `caddy`; плюс одноразовый `ingestion` в профиле `init`. Наружу опубликованы только 80/443 у Caddy; `postgres`, `kafka`, `clickhouse` и `webapi` портов не публикуют. Образы приложения — `ghcr.io/${OWNER}/geopulse-*:${DOCKER_TAG}`.
 
@@ -243,5 +247,5 @@ producer.Produce(topic, new Message<string, string> { Key = key, Value = value }
 1. **Число партиций `production-daily`.** В `docker-compose.yml` `KAFKA_NUM_PARTITIONS: 1`, в `docker-compose.prod.yml` — `3`, `deploy.sh` создаёт топик с `TOPIC_PARTITIONS=3`. Локально и в проде поведение партиционирования поэтому разное. Какое значение считать эталонным — [УТОЧНИТЬ].
 2. **Контрольные числа пайплайна** (15 634 строки добычи, 7 скважин, 526 агрегатов, `totalOilVol` ≈ 10 037 080.61) взяты из `README.md`; в этом документе они не перепроверялись на живом стенде — [УТОЧНИТЬ] после полного прогона ingestion.
 3. **`kafka-ui` в проде.** В прод-стеке его нет; нужен ли он на сервере для разбора DLQ — [УТОЧНИТЬ].
-4. **Схема из `docs/volve-postgres-model.md`.** Документ описывает проект на 23 таблицы (включая отчёты бурения, перфорации, керн). Реализовано 6 таблиц (`wells`, `daily_production`, `well_locations`, `well_trajectories`, `well_trajectory_meta`, `analytics.monthly_production`). Считать ли тот документ архивным проектированием или планом развития — [УТОЧНИТЬ].
+4. **Число таблиц PostgreSQL.** Реализовано 5 таблиц (`wells`, `daily_production`, `well_locations`, `well_trajectories`, `well_trajectory_meta`); ранее существовавшая `analytics.monthly_production` удалена как неиспользуемая. Нужны ли в PostgreSQL дополнительные сущности из исходного набора Volve (отчёты бурения, перфорации, керн) — [УТОЧНИТЬ].
 5. **Ретраи и мониторинг DLQ.** Автоматического ретрая/переупаковки DLQ и алертов по её размеру в коде нет. Нужен ли отдельный процесс разбора — [УТОЧНИТЬ].

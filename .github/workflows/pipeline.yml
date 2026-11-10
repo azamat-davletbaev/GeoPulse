@@ -1,0 +1,183 @@
+# Единый CI/CD-пайплайн GeoPulse (Zero Downtime деплой).
+#
+# Один последовательный workflow вместо прежних ci.yml и deploy.yml:
+#   1. build-and-test  — сборка solution, проверка стиля, EF-модели и `dotnet test`;
+#   2. frontend-check  — проверки статического клиента (web/app.js);
+#   3. build-and-push  — сборка 5 образов и публикация в ghcr.io;
+#   4. deploy          — запуск deploy.sh на сервере по SSH.
+#
+# Слои доставки и развёртывания запускаются СТРОГО после успешного прохождения
+# всех тестов: `build-and-push` объявляет `needs: [build-and-test, frontend-check]`,
+# `deploy` — `needs: [build-and-push]`. Падение любого шага останавливает пайплайн:
+# образы не публикуются, сервер не трогается.
+#
+# Секреты репозитория (Settings -> Secrets and variables -> Actions):
+#   SSH_HOST          — IP или домен сервера
+#   SSH_USER          — deploy (создан scripts/bootstrap-server.sh)
+#   SSH_PRIVATE_KEY   — приватный ключ, пара к DEPLOY_PUBKEY на сервере
+#   DEPLOY_TOKEN_GHCR — НЕ используется: `docker login ghcr.io` выполняется
+#                       один раз на сервере при bootstrap.
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Ручной запуск: полный прогон тестов + сборка образов + деплой с ветки main.
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # --- СЛОЙ ИНТЕГРАЦИИ (CI): ТЕСТЫ И ПРОВЕРКИ ---
+  build-and-test:
+    name: Build & test (.NET 10)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore GeoPulse.slnx
+
+      - name: Verify code style
+        run: dotnet format GeoPulse.slnx --verify-no-changes --no-restore
+
+      - name: Build
+        run: dotnet build GeoPulse.slnx -c Release --no-restore
+
+      - name: Verify EF model matches migrations
+        run: dotnet tool restore && dotnet ef migrations has-pending-model-changes --project src/GeoPulse.Infrastructure
+
+      - name: Test
+        run: dotnet test tests/GeoPulse.Tests/GeoPulse.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx"
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: 1
+          DOTNET_NOLOGO: 1
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: '**/TestResults/**/*.trx'
+          if-no-files-found: ignore
+
+  frontend-check:
+    name: Frontend check (web/app.js)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Layers and initial view (mixed data)
+        run: node tests/frontend/webapp-check.js mixed
+
+      - name: Neutral view without valid coordinates (empty data)
+        run: node tests/frontend/webapp-check.js empty
+
+  # --- СЛОЙ ДОСТАВКИ (CD): СБОРКА И ПУБЛИКАЦИЯ ОБРАЗОВ ---
+  # Запускается только после успешного прохождения ВСЕХ тестов (needs) и только
+  # для main (push или workflow_dispatch): на PR образы не публикуются.
+  build-and-push:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    needs: [build-and-test, frontend-check]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: webapi
+            dockerfile: src/GeoPulse.WebAPI/Dockerfile
+          - name: consumer
+            dockerfile: src/GeoPulse.Consumer/Dockerfile
+          - name: chingest
+            dockerfile: src/GeoPulse.CHIngest/Dockerfile
+          - name: aggregator
+            dockerfile: src/GeoPulse.Aggregator/Dockerfile
+          - name: ingestion
+            dockerfile: src/GeoPulse.Ingestion.Service/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          # Теги: короткий SHA (повторяемая привязка к коммиту, для отката) + latest
+          # («текущая» версия). Сервер пулит тег из .env (DOCKER_TAG); для отката —
+          # конкретный короткий SHA.
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/geopulse-${{ matrix.name }}:${{ steps.sha.outputs.short }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/geopulse-${{ matrix.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # --- СЛОЙ РАЗВЁРТЫВАНИЯ: ДЕПЛОЙ НА СЕРВЕР ---
+  # Ждёт завершения build-and-push — к этому моменту образы с тегом короткого SHA
+  # (и latest) уже лежат в ghcr.io, и сервер может их тянуть.
+  deploy:
+    name: Deploy to server
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Не запускаем два деплоя одновременно (сервер один) и не отменяем начатый.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Run deploy.sh on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          # Останавливаемся на первой ошибке удалённого скрипта.
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            # deploy.sh сам нормализует полный SHA к короткому тегу ghcr.
+            export IMAGE_TAG="${{ steps.sha.outputs.short }}"
+            cd /opt/geopulse
+            bash ./deploy.sh

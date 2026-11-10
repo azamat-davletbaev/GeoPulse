@@ -3,7 +3,7 @@
 # GeoPulse — деплой очередного релиза на сервер (один запуск = один релиз).
 #
 # Запускается:
-#   * из GitHub Actions (job `deploy` в .github/workflows/deploy.yml):
+#   * из GitHub Actions (job `deploy` в .github/workflows/pipeline.yml):
 #         IMAGE_TAG=<короткий SHA> bash /opt/geopulse/deploy.sh
 #   * вручную на сервере (например первый деплой):
 #         sudo -u deploy IMAGE_TAG=latest bash /opt/geopulse/deploy.sh
@@ -114,7 +114,7 @@ PREV_TAG="${PREV_TAG:-latest}"
 
 if [ -n "$IMAGE_TAG" ]; then
   NEW_TAG="$IMAGE_TAG"
-  # Полный 40-символьный SHA -> короткий тег, как в .github/workflows/deploy.yml.
+  # Полный 40-символьный SHA -> короткий тег, как в .github/workflows/pipeline.yml.
   if [ "${#NEW_TAG}" -eq 40 ]; then
     NEW_TAG="${NEW_TAG:0:7}"
   fi
