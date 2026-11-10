@@ -335,6 +335,8 @@ compose up -d --remove-orphans
 # 9. Health-check: ретраи до 60 секунд (30 × 2 с), затем проверка статусов.
 # ----------------------------------------------------------------------------
 log "9/10 Health-check GET /health (до $((HEALTH_ATTEMPTS * 2)) с)"
+echo "Ожидаем холодный старт .NET рантайма..."
+sleep 5
 HEALTH_OK=0
 for i in $(seq 1 "$HEALTH_ATTEMPTS"); do
   if probe_webapi; then
