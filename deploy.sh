@@ -354,22 +354,24 @@ if [ "$HEALTH_OK" -ne 1 ]; then
   die "Деплой прерван: GET /health не вернул database=up. Образы НЕ удалены (см. подсказку откатa ниже)."
 fi
 
-# ЧЕСТНОЕ ОЖИДАНИЕ: Ждем, пока Docker-healthcheck переведет все контейнеры из starting в healthy
-log "Ожидаем перехода всех сервисов в финальный статус healthy/running..."
+# === ЧЕСТНОЕ ОЖИДАНИЕ СТАТУСА DOCKER HEALTHCHECK ===
+log "Ожидаем, пока демон Docker зафиксирует статус healthy для всех сервисов..."
 for name in "${CORE_CONTAINERS[@]}"; do
+  # Проверяем контейнер в цикле (до 15 раз по 2 секунды = 30 секунд максимум)
   for retry in $(seq 1 15); do
     state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name" 2>/dev/null || echo missing)"
     if [ "$state" = "healthy" ] || [ "$state" = "running" ]; then
+      log "Сервис ${name} успешно вышел в статус: ${state}"
       break
     fi
     if [ "$state" = "unhealthy" ] || [ "$state" = "exited" ]; then
-      die "Сервис ${name} упал в статус ${state}"
+      die "Критическая ошибка: сервис ${name} перешел в состояние ${state}!"
     fi
     sleep 2
   done
 done
 
-# Финальная строгая проверка (без starting!)
+# Финальная строгая инспекция (гарантирует, что на выходе нет никаких starting)
 BAD=0
 for name in "${CORE_CONTAINERS[@]}"; do
   state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name" 2>/dev/null || echo missing)"
