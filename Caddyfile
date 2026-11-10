@@ -15,6 +15,16 @@
 {$DOMAIN} {
 	encode zstd gzip
 
+	# Включаем логирование запросов
+	log {
+		output file /data/access.log {
+			roll_size 10mb    # Ротация файла при достижении 10 МБ
+			roll_keep 5       # Хранить последние 5 архивных файлов
+			roll_keep_for 720h # Хранить архивы не дольше 30 дней (720 часов)
+		}
+		format json # Самый информативный структурированный формат логов Caddy
+	}
+
 	reverse_proxy webapi:5146 {
 		lb_try_duration 15s
 		lb_try_interval 250ms
@@ -27,6 +37,15 @@
 # проксирует трафик на тот же webapi. Порт 80 должен быть открыт в UFW.
 http://{$FALLBACK_IP} {
 	encode zstd gzip
+	
+	# Включаем логирование запросов для IP-входа
+	log {
+		output file /data/access_fallback.log {
+			roll_size 10mb
+			roll_keep 3
+		}
+		format json
+	}
 
 	reverse_proxy webapi:5146 {
 		lb_try_duration 15s
