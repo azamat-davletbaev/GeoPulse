@@ -1,0 +1,10 @@
+bin/
+obj/
+packages/
+artifacts/
+TestResults/
+*.binlog
+data/
+node_modules/
+dist/
+.git/
