@@ -178,4 +178,5 @@ jobs:
             # deploy.sh сам нормализует полный SHA к короткому тегу ghcr.
             export IMAGE_TAG="${{ steps.sha.outputs.short }}"
             cd /opt/geopulse
+            git pull --ff-only origin main
             bash ./deploy.sh
