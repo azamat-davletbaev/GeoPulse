@@ -20,7 +20,7 @@
 | Инструмент | Версия | Зачем | Где зафиксирована |
 | --- | --- | --- | --- |
 | .NET SDK | `10.0.x` (все проекты — `net10.0`) | сборка, тесты, запуск сервисов вне контейнеров | `pipeline.yml` (`dotnet-version: '10.0.x'`), `TargetFramework` в каждом csproj |
-| Docker Engine / Docker Desktop + `docker compose` | актуальная; в CI — предустановленный Docker на `ubuntu-latest` | инфраструктура (Postgres, Kafka, ClickHouse) и Testcontainers | `docker-compose*.yml`, `pipeline.yml`, `tests/GeoPulse.Tests/*.csproj` |
+| Docker Engine / Docker Desktop + `docker compose` | актуальная; в CI — предустановленный Docker на `ubuntu-24.04` | инфраструктура (Postgres, Kafka, ClickHouse) и Testcontainers | `docker-compose*.yml`, `pipeline.yml`, `tests/GeoPulse.Tests/*.csproj` |
 | Node.js | `20` | проверка фронтенда (`tests/frontend/webapp-check.js`); локально можно не ставить — скрипт гоняет Node в контейнере | `pipeline.yml` (`node-version: '20'`), `tests/frontend/run-webapp-check.ps1` (`node:20-alpine`) |
 | `dotnet-ef` | `10.0.14` | миграции EF Core вручную | `.config/dotnet-tools.json` |
 
