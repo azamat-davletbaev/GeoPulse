@@ -32,7 +32,7 @@ WORKDIR /app
 # кэшировался независимо от кода приложения; базовый образ работает под USER app,
 # поэтому для установки пакетов временно переключаемся на root.
 USER root
-RUN apt-get update \
+RUN for i in 1 2 3; do apt-get update && break || sleep 10; done \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 USER app
