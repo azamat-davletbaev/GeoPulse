@@ -11,9 +11,8 @@
 | `src/GeoPulse.Ingestion.Service/IngestionService.cs`, `TrajectoryParser.cs`, `appsettings.json` | источник данных, что и в каком порядке публикуется |
 | `src/GeoPulse.Consumer/ProductionConsumerService.cs`, `Program.cs` | чтение Kafka, SQL-запись в PostgreSQL, DLQ |
 | `src/GeoPulse.CHIngest/CHIngestService.cs` | DDL ClickHouse, чтение Kafka, резолв `npdWellBoreCode → well_id` |
-| `src/GeoPulse.Aggregator/AggregatorService.cs` | агрегация `production_daily → monthly_production` |
 | `src/GeoPulse.Messaging/*` (`EventClassifier`, `DlqPublisher`) | единый разбор сообщений и формат DLQ для обоих читателей |
-| `src/GeoPulse.ClickHouse/ClickHouseSchema.cs` | DDL базы `gp` и её таблиц — один источник для CHIngest и Aggregator |
+| `src/GeoPulse.ClickHouse/ClickHouseSchema.cs` | DDL базы `gp` и её таблиц — один источник для CHIngest |
 | `src/GeoPulse.Infrastructure/WellIds/WellIdCache.cs` | резолв `npdWellBoreCode → well_id` с кэшем (общий для Consumer и CHIngest) |
 | `src/GeoPulse.WebAPI/Analytics/*`, `Reports/*`, `Health/*`, контроллеры | что читает API, из какого хранилища |
 | `src/GeoPulse.Core/Events/*` | конверт и поля событий, `schemaVersion`, причины DLQ |
@@ -33,10 +32,8 @@ flowchart LR
     CHI -->|"INSERT (ReplacingMergeTree)"| CH[(ClickHouse<br/>gp)]
     CHI -->|"SELECT npd_well_bore_code, id FROM wells"| PG
     CHI --> DLQ
-    CH -->|"production_daily FINAL"| AGG[GeoPulse.Aggregator<br/>таймер RecalcIntervalSeconds]
-    AGG -->|"TRUNCATE + INSERT monthly_production"| CH
+    CH -->|"production_daily FINAL, агрегация на лету"| API
     API[GeoPulse.WebAPI] -->|"скважины, суточная добыча, траектории"| PG
-    API -->|"monthly_production"| CH
     WEB["web/ — Leaflet + ECharts<br/>(статика из WebAPI)"] -->|"fetch /api/*"| API
     CADDY[Caddy] -->|"reverse_proxy webapi:5146"| API
 ```
@@ -50,10 +47,9 @@ flowchart LR
 | `GeoPulse.Ingestion.Service` | Excel `data/Volve_Production_data/Volve production data.xlsx` (лист `Daily Production Data`), текстовые файлы `data/Volve_Well_technical_data/WellWellbore/**/*_ACTUAL` | Kafka-топик `production-daily` | Единственное место, где разбирается «сырой» датасет Volve. В БД не пишет вообще: его задача — превратить файлы в события. Запускается одноразово (`profiles: ["init"]` в `docker-compose.prod.yml`, `docker compose run --rm ingestion`). |
 | `GeoPulse.Consumer` | Kafka `production-daily` (группа `geopulse-consumer`), `Kafka:BatchSize` (по умолчанию 500) | PostgreSQL: `wells` (upsert по `npd_well_bore_code`), `daily_production` (`ON CONFLICT (well_id, date) DO NOTHING`), `well_trajectories` (`ON CONFLICT (well_id, md) DO NOTHING`), `well_trajectory_meta` (upsert по `well_id`); Kafka `production-daily-dlq` | «Точечное» хранилище: на старте сам применяет EF Core миграции (`db.Database.MigrateAsync`), затем идемпотентно переносит события в PostgreSQL. |
 | `GeoPulse.CHIngest` | Kafka `production-daily` (группа `geopulse-chingest`), PostgreSQL `wells` через общий `WellIdCache` (первый запрос читает справочник целиком, промах уточняется точечным `SELECT id`) | ClickHouse: `gp.wells`, `gp.production_daily` (движок `ReplacingMergeTree`); Kafka `production-daily-dlq` | Второй независимый читатель того же топика: складывает сырые суточные события в колоночную БД для аналитики. События `well.trajectory` распознаёт, но в ClickHouse не пишет (геометрия — не таймсерия). Схему создаёт через `ClickHouseSchema.EnsureAsync`. |
-| `GeoPulse.Aggregator` | ClickHouse `gp.production_daily FINAL` | ClickHouse `gp.monthly_production` (`TRUNCATE` + `INSERT ... SELECT ... GROUP BY well_id, year, month`) | Считает помесячные агрегаты без инкрементального состояния: полный пересбор на старте и далее по `PeriodicTimer` каждые `RecalcIntervalSeconds` (по умолчанию 60 с). В Kafka и PostgreSQL не ходит. |
-| `GeoPulse.WebAPI` | PostgreSQL: `wells`, `well_locations`, `well_trajectory_meta`, `daily_production`, `well_trajectories`; ClickHouse `gp.monthly_production` | Ничего (read-only); отдаёт статику `web/` (`UseStaticFiles`) и `/swagger` | Единая точка входа для клиента: REST API + раздача фронтенда. |
+| `GeoPulse.WebAPI` | PostgreSQL: `wells`, `well_locations`, `well_trajectory_meta`, `daily_production`, `well_trajectories`; ClickHouse `gp.production_daily FINAL` (помесячные суммы считаются на лету, `GROUP BY well_id, year, month`) | Ничего (read-only); отдаёт статику `web/` (`UseStaticFiles`) и `/swagger` | Единая точка входа для клиента: REST API + раздача фронтенда. |
 | `postgres` (`postgres:17-alpine`) | — | — | Точечные данные, справочники, уникальные ограничения. |
-| `clickhouse` (`clickhouse/clickhouse-server:24.8`) | — | — | Сырые события и агрегаты аналитики. |
+| `clickhouse` (`clickhouse/clickhouse-server:24.8`) | — | — | Сырые суточные события; помесячная аналитика агрегируется из них на лету. |
 | `kafka` (`apache/kafka:4.0.0`, один узел KRaft: `KAFKA_PROCESS_ROLES=broker,controller`) | — | — | Шина между импортом и двумя читателями. |
 | `kafka-ui` (`provectuslabs/kafka-ui:latest`, порт 8080) | — | — | Только локальная разработка (`docker-compose.yml`); в прод-стек не входит. |
 | `caddy` (`caddy:2.8-alpine`) | — | — | Единственный контейнер, смотрящий наружу (80/443): TLS Let's Encrypt для `DOMAIN` плюс резервный вход по `http://{$FALLBACK_IP}`. Проксирует всё на `webapi:5146`. |
@@ -67,7 +63,7 @@ flowchart LR
 | Библиотека | Что внутри | Кто использует |
 | --- | --- | --- |
 | `GeoPulse.Messaging` | `EventClassifier` (разбор конверта: `eventType`/`schemaVersion`, десериализация данных, причина отбраковки) и `DlqPublisher` (публикация в DLQ с заголовками `reason`/`source-topic`) | `Consumer`, `CHIngest` |
-| `GeoPulse.ClickHouse` | `ClickHouseSchema`: DDL базы `gp` и трёх таблиц + идемпотентное `EnsureAsync` | `CHIngest`, `Aggregator`, `WebAPI` (имена таблиц), тесты |
+| `GeoPulse.ClickHouse` | `ClickHouseSchema`: DDL базы `gp` и двух таблиц + идемпотентное `EnsureAsync` | `CHIngest`, `WebAPI` (имена таблиц), тесты |
 | `GeoPulse.Infrastructure/WellIds` | `WellIdCache` — реализация `IWellIdResolver` (кэш положительных результатов, промах уточняется запросом) | `Consumer`, `CHIngest` |
 
 До выноса этих библиотек `Classify`, публикация в DLQ, DDL ClickHouse и резолв `well_id` были скопированы в двух сервисах; одна и та же ситуация могла помечаться в DLQ по-разному.
@@ -93,14 +89,13 @@ flowchart LR
 
 | Запрос в коде | Источник |
 | --- | --- |
-| `SELECT sum(oil_vol_sum), sum(gas_vol_sum), sum(water_vol_sum), sum(water_injection_vol_sum), sum(on_stream_hrs_sum), sum(days_count) FROM gp.monthly_production` | `ClickHouseAnalyticsService.GetSummaryAsync` |
-| `SELECT well_id, year, month, oil_vol_sum, water_vol_sum FROM gp.monthly_production ORDER BY year, month, well_id` | `ClickHouseAnalyticsService.GetAllMonthlyAsync` |
-| `SELECT year, month, ... FROM gp.monthly_production WHERE well_id = N ORDER BY year, month` | `ClickHouseAnalyticsService.GetMonthlyByWellAsync` |
-| `INSERT INTO gp.monthly_production SELECT well_id, toYear(date), toMonth(date), sum(...), count() FROM gp.production_daily FINAL GROUP BY well_id, year, month` | `AggregatorService.RebuildInsertSql` |
+| `SELECT sum(oil_vol), sum(gas_vol), sum(water_vol), sum(water_injection_vol), sum(on_stream_hrs), count() FROM gp.production_daily FINAL` | `ClickHouseAnalyticsService.GetSummaryAsync` |
+| `SELECT well_id, toYear(date) AS year, toMonth(date) AS month, sum(oil_vol), sum(gas_vol), sum(water_vol), sum(water_injection_vol), sum(on_stream_hrs), count() AS days_count FROM gp.production_daily FINAL GROUP BY well_id, year, month ORDER BY year, month, well_id` | `ClickHouseAnalyticsService.GetAllMonthlyAsync` |
+| тот же агрегат с `WHERE well_id = {wellId:UInt32} GROUP BY well_id, year, month ORDER BY year, month` | `ClickHouseAnalyticsService.GetMonthlyByWellAsync` |
 
-Что даёт ClickHouse: `sum()` по всем строкам за всё время одним запросом, пересборка агрегата одной командой, `ReplacingMergeTree` + чтение `FINAL` вместо ручной дедупликации повторов из топика. В PostgreSQL пришлось бы либо держать агрегаты вручную, либо считать `GROUP BY` по `daily_production` на каждый запрос.
+Что даёт ClickHouse: `sum()` по всем строкам за всё время одним запросом, `GROUP BY well_id, year, month` по 15 634 суточным строкам на лету (единицы миллисекунд вместо отдельного сервиса и минуты лага), `ReplacingMergeTree` + чтение `FINAL` вместо ручной дедупликации повторов из топика. В PostgreSQL такой запрос упирался бы в построчное чтение и в конкуренцию с OLTP-нагрузкой справочника.
 
-**Аналитика только в ClickHouse.** Единственный источник помесячных агрегатов — `gp.monthly_production`. Читает его `ClickHouseAnalyticsService` (реализация порта `IMonthlyProductionReader`), от которого зависят `AnalyticsController` (отдаёт DTO) и `ReportDataLoader` (данные отчётов). PostgreSQL-схема `analytics` из ранней версии удалена миграцией `DropUnusedAnalyticsMonthlyProduction` — код её никогда не читал и не писал.
+**Аналитика только в ClickHouse.** Единственный источник аналитики — `gp.production_daily`; помесячные суммы считаются на лету в `ClickHouseAnalyticsService` (реализация порта `IMonthlyProductionReader`), от которого зависят `AnalyticsController` (отдаёт DTO) и `ReportDataLoader` (данные отчётов). Предвычисленной таблицы агрегатов нет (ADR-016). PostgreSQL-схема `analytics` из ранней версии удалена миграцией `DropUnusedAnalyticsMonthlyProduction` — код её никогда не читал и не писал.
 
 **Слои API.** `WebAPI` разделён по ответственности: `Analytics/` — порт и реализация чтения агрегатов, `Reports/` — `ReportDataLoader` (данные + метрики через `ReportMetrics`) и два генератора форматов (`XlsxReportWriter`, `CsvReportWriter`), `Health/` — проба БД для `/health`, `Models/Api` и `Models/Reports` — контракты ответов и внутренние модели отчётов соответственно.
 
@@ -236,9 +231,9 @@ producer.Produce(topic, new Message<string, string> { Key = key, Value = value }
 
 ## 5. Топология запуска
 
-**Локально (`docker-compose.yml`)** — 8 сервисов: `postgres` (5432), `clickhouse` (8123, 9000), `kafka` (9092, healthcheck), `kafka-ui` (8080), `consumer`, `chingest`, `aggregator` и `webapi` (5146). Все четыре .NET-сервиса собираются из локальных исходников (`build:`), учётные данные зашиты в сам файл (`geopulse`/`geopulse`, БД `geopulse_core` и `gp`), `.env` не нужен; сервисы стартуют по `depends_on: service_healthy` (postgres/clickhouse/kafka). `ingestion` и `caddy` в локальный compose **не входят** — данные импортируются с хоста (`dotnet run --project src/GeoPulse.Ingestion.Service`), TLS локально не нужен.
+**Локально (`docker-compose.yml`)** — 7 сервисов: `postgres` (5432), `clickhouse` (8123, 9000), `kafka` (9092, healthcheck), `kafka-ui` (8080), `consumer`, `chingest` и `webapi` (5146). Все три .NET-сервиса собираются из локальных исходников (`build:`), учётные данные зашиты в сам файл (`geopulse`/`geopulse`, БД `geopulse_core` и `gp`), `.env` не нужен; сервисы стартуют по `depends_on: service_healthy` (postgres/clickhouse/kafka). `ingestion` и `caddy` в локальный compose **не входят** — данные импортируются с хоста (`dotnet run --project src/GeoPulse.Ingestion.Service`), TLS локально не нужен.
 
-**Прод (`docker-compose.prod.yml`)** — 8 постоянных сервисов: `postgres`, `kafka`, `clickhouse`, `consumer`, `chingest`, `aggregator`, `webapi`, `caddy`; плюс одноразовый `ingestion` в профиле `init`. Наружу опубликованы только 80/443 у Caddy; `postgres`, `kafka`, `clickhouse` и `webapi` портов не публикуют. Образы приложения — `ghcr.io/${OWNER}/geopulse-*:${DOCKER_TAG}`.
+**Прод (`docker-compose.prod.yml`)** — 7 постоянных сервисов: `postgres`, `kafka`, `clickhouse`, `consumer`, `chingest`, `webapi`, `caddy`; плюс одноразовый `ingestion` в профиле `init`. Наружу опубликованы только 80/443 у Caddy; `postgres`, `kafka`, `clickhouse` и `webapi` портов не публикуют. Образы приложения — `ghcr.io/${OWNER}/geopulse-*:${DOCKER_TAG}`.
 
 Внутренние адреса, к которым обращаются сервисы: `postgres:5432`, `kafka:29092`, `clickhouse:8123`, `webapi:5146`.
 
@@ -249,3 +244,5 @@ producer.Produce(topic, new Message<string, string> { Key = key, Value = value }
 3. **`kafka-ui` в проде.** В прод-стеке его нет; нужен ли он на сервере для разбора DLQ — [УТОЧНИТЬ].
 4. **Число таблиц PostgreSQL.** Реализовано 5 таблиц (`wells`, `daily_production`, `well_locations`, `well_trajectories`, `well_trajectory_meta`); ранее существовавшая `analytics.monthly_production` удалена как неиспользуемая. Нужны ли в PostgreSQL дополнительные сущности из исходного набора Volve (отчёты бурения, перфорации, керн) — [УТОЧНИТЬ].
 5. **Ретраи и мониторинг DLQ.** Автоматического ретрая/переупаковки DLQ и алертов по её размеру в коде нет. Нужен ли отдельный процесс разбора — [УТОЧНИТЬ].
+
+Последняя сверка с кодом: 2026-11-10

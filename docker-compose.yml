@@ -159,21 +159,6 @@ services:
       kafka:
         condition: service_healthy
 
-  aggregator:
-    build:
-      context: .
-      dockerfile: src/GeoPulse.Aggregator/Dockerfile
-    container_name: geopulse-aggregator
-    restart: on-failure
-    environment:
-      # ClickHouse production_daily → monthly_production: пересчёт на старте и далее
-      # каждые RecalcIntervalSeconds. Другие хранилища сервису не нужны.
-      ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Database=gp;Username=geopulse;Password=geopulse
-      RecalcIntervalSeconds: "60"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-
   webapi:
     build:
       context: .

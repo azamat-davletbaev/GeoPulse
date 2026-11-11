@@ -3,7 +3,7 @@
 # Один последовательный workflow вместо прежних ci.yml и deploy.yml:
 #   1. build-and-test  — сборка solution, проверка стиля, EF-модели и `dotnet test`;
 #   2. frontend-check  — проверки статического клиента (web/app.js);
-#   3. build-and-push  — сборка 5 образов и публикация в ghcr.io;
+#   3. build-and-push  — сборка 4 образов и публикация в ghcr.io;
 #   4. deploy          — запуск deploy.sh на сервере по SSH.
 #
 # Слои доставки и развёртывания запускаются СТРОГО после успешного прохождения
@@ -111,8 +111,6 @@ jobs:
             dockerfile: src/GeoPulse.Consumer/Dockerfile
           - name: chingest
             dockerfile: src/GeoPulse.CHIngest/Dockerfile
-          - name: aggregator
-            dockerfile: src/GeoPulse.Aggregator/Dockerfile
           - name: ingestion
             dockerfile: src/GeoPulse.Ingestion.Service/Dockerfile
     steps:

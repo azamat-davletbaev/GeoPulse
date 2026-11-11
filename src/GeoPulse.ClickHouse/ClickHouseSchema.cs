@@ -6,6 +6,7 @@ namespace GeoPulse.ClickHouse
     /// Единое описание схемы ClickHouse GeoPulse (база <c>gp</c>) и её идемпотентное создание.
     /// До этого DDL был продублирован в CHIngest (база, wells, production_daily) и Aggregator
     /// (база, production_daily, monthly_production) — две копии одной схемы легко расходятся.
+    /// С ADR-016 предвычисленной таблицы агрегатов нет: помесячные суммы считает WebAPI на лету.
     /// </summary>
     public static class ClickHouseSchema
     {
@@ -14,9 +15,6 @@ namespace GeoPulse.ClickHouse
 
         /// <summary>Таблица сырых суточных событий.</summary>
         public const string ProductionDailyTable = "gp.production_daily";
-
-        /// <summary>Таблица помесячных агрегатов.</summary>
-        public const string MonthlyProductionTable = "gp.monthly_production";
 
         /// <summary>Справочник скважин в ClickHouse.</summary>
         public const string WellsTable = "gp.wells";
@@ -60,23 +58,6 @@ namespace GeoPulse.ClickHouse
             "avg_wht Float64," +
             "dp_choke_size Float64" +
             ") ENGINE = ReplacingMergeTree ORDER BY (npd_well_bore_code, date)";
-
-        /// <summary>
-        /// Помесячные агрегаты. Обычный MergeTree (не Replacing): таблица каждый раз
-        /// пересобирается целиком — TRUNCATE + INSERT ... SELECT.
-        /// </summary>
-        public const string CreateMonthlyProductionSql =
-            "CREATE TABLE IF NOT EXISTS gp.monthly_production (" +
-            "well_id UInt32," +
-            "year UInt16," +
-            "month UInt8," +
-            "oil_vol_sum Float64," +
-            "gas_vol_sum Float64," +
-            "water_vol_sum Float64," +
-            "water_injection_vol_sum Float64," +
-            "on_stream_hrs_sum Float64," +
-            "days_count UInt64" +
-            ") ENGINE = MergeTree ORDER BY (well_id, year, month)";
 
         /// <summary>
         /// Выполняет переданные DDL-операторы в одном соединении в указанном порядке.

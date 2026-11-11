@@ -13,7 +13,7 @@
 | `src/GeoPulse.WebAPI/Controllers/*.cs` | маршруты, параметры, коды ответов |
 | `src/GeoPulse.WebAPI/Models/*.cs` | состав JSON-ответов |
 | `src/GeoPulse.WebAPI/Reports/*` | структура XLSX/CSV (`XlsxReportWriter`, `CsvReportWriter`) и формулы обводнённости и доли (`ReportMetrics`) |
-| `src/GeoPulse.WebAPI/ClickHouseAnalyticsService.cs` | SQL, на котором считаются агрегаты |
+| `src/GeoPulse.WebAPI/Analytics/ClickHouseAnalyticsService.cs` | SQL, на котором считаются агрегаты |
 | `tests/smoke/webapi-smoke.ps1` | фактические проверки контракта (коды 200/400/404) |
 
 ## 1. Что умеет веб-интерфейс
@@ -56,7 +56,7 @@
 | Переключатель области | «По месторождению» / «По скважине»; во втором режиме появляется `<select>` со списком скважин. |
 | Факт | Помесячная добыча нефти и воды (левая ось) и газа (правая ось) — те же `GET /api/wells` и `GET /api/Analytics/monthly`. |
 | Прогноз | Запрашиваются `GET /api/Forecast/field` или `GET /api/Forecast/wells/{wellId}`. **Этих эндпоинтов в WebAPI пока нет** (контроллера `Forecast` в `src/GeoPulse.WebAPI/Controllers` не существует), поэтому страница показывает блок «Прогноз недоступен» с кнопкой «Повторить». Это заявленное поведение: `forecast.js` ловит ошибку и считает её ожидаемой. Страница оставлена как заготовка под ML-сервис. |
-| «План внедрения прогноза» | Статическая карточка под графиком (`forecast.html`, класс `card plan`): XGBoost с лаговыми признаками, офлайн-обучение в Python (train 2008–2015 + holdout, MAE/MAPE), ONNX в рантайме WebAPI через `Microsoft.ML.OnnxRuntime`, эндпоинт `/api/forecast`; на графике факт дополняется пунктирным прогнозом на полгода. Текст не зависит от API, `forecast.js` этот блок не трогает. |
+| «План внедрения прогноза» | Статическая карточка под графиком (`forecast.html`, класс `card plan`): CatBoost → ONNX — CatBoost с лаговыми признаками, офлайн-обучение в Python (train 2008–2015 + holdout, MAE/MAPE), экспорт модели в ONNX и инференс в рантайме WebAPI через `Microsoft.ML.OnnxRuntime` (единая ML-стратегия проекта, ONNX-инференс в .NET), эндпоинт `/api/forecast`; на графике факт дополняется пунктирным прогнозом на полгода. Текст не зависит от API, `forecast.js` этот блок не трогает. |
 
 ### 1.4 Страница «О проекте» (`/about.html`)
 
@@ -69,6 +69,7 @@
 * **Нет аутентификации и авторизации.** Все эндпоинты и статика открыты.
 * **Нет пагинации в UI** — страницы суточной добычи клиентом не используются.
 * **Нет перфораций и пластов** — в выгружаемых частях Volve их нет, поэтому нет ни таблиц, ни эндпоинтов, ни слоёв карты.
+* **Swagger доступен во всех окружениях, включая прод** (`/swagger`) — осознанно как часть витрины; в реальном проде закрывался бы feature-flag'ом или аутентификацией.
 
 ## 2. API-эндпоинты
 
@@ -115,6 +116,8 @@
  "waterInjectionVolSum":0,"onStreamHrsSum":0,"daysCount":18}
 ```
 
+В помесячные выгрузки включаются все календарные месяцы диапазона дат добычи, включая месяцы без добычи — поведение осознанное.
+
 `GET /api/wells/5351`:
 
 ```json
@@ -150,36 +153,39 @@ Year,Month,OilVol,WaterVol,WaterCutPct
 
 ## 3. Как считаются отчётные метрики
 
-Схема расчёта — три слоя, каждый в одном месте:
+Схема расчёта — два слоя, каждый в одном месте:
 
 ```
 daily_production (PostgreSQL, суточные строки)
         │  CHIngest (Kafka → ClickHouse)
         ▼
 gp.production_daily (ReplacingMergeTree)
-        │  Aggregator: TRUNCATE + INSERT ... SELECT ... GROUP BY
+        │  WebAPI: SELECT ... GROUP BY well_id, year, month (на лету, FINAL)
         ▼
-gp.monthly_production (MergeTree)  →  /api/Analytics/*, /api/Reports/*
+/api/Analytics/*, /api/Reports/*
 ```
 
 ### 3.1 Помесячный агрегат
 
-`AggregatorService.RebuildInsertSql`, выполняется каждые `RecalcIntervalSeconds` (60 с) и сразу на старте:
+Считается на лету при каждом запросе — `ClickHouseAnalyticsService.MonthlyAggregateSql` (`src/GeoPulse.WebAPI/Analytics/ClickHouseAnalyticsService.cs`); предвычисленной таблицы нет (ADR-016):
 
 ```sql
-INSERT INTO gp.monthly_production
 SELECT well_id, toYear(date) AS year, toMonth(date) AS month,
-       sum(oil_vol), sum(gas_vol), sum(water_vol), sum(water_injection_vol),
-       sum(on_stream_hrs), count() AS days_count
+       sum(oil_vol) AS oil_vol_sum, sum(gas_vol) AS gas_vol_sum, sum(water_vol) AS water_vol_sum,
+       sum(water_injection_vol) AS water_injection_vol_sum, sum(on_stream_hrs) AS on_stream_hrs_sum,
+       count() AS days_count
 FROM gp.production_daily FINAL
 GROUP BY well_id, year, month
+ORDER BY year, month, well_id
 ```
+
+Для одной скважины (`GetMonthlyByWellAsync`) к тому же агрегату добавляется `WHERE well_id = {wellId:UInt32}` (значение передаётся параметром запроса, а не подстановкой в текст) и `ORDER BY year, month`.
 
 Важные следствия:
 
 * `FINAL` схлопывает дубликаты `ReplacingMergeTree` (ключ сортировки `npd_well_bore_code, date`) — поэтому повторная доставка сообщений топика не удваивает суммы.
 * `days_count` = `count()` строк, а не количество дней с `on_stream_hrs > 0`. На текущем датасете сумма `days_count` по всем скважинам равна 15 634 — столько же, сколько строк `daily_production`.
-* Таблица пересобирается целиком (`TRUNCATE` + `INSERT`), инкрементального состояния нет: любое изменение сырых данных подхватывается на следующем тике.
+* Агрегация выполняется на каждый запрос по 15 634 суточным строкам: по замерам ADR-016 это единицы миллисекунд — взамен нет отдельного сервиса-пересборщика и лага между импортом и аналитикой.
 * При загрузке в ClickHouse `null` из события превращается в `0` (`CHIngestService.Float`: `value?.ToString("R") ?? "0"`), поэтому «нет данных» и «ноль» в ClickHouse неразличимы. В PostgreSQL `null` сохраняется как `NULL` (`ProductionConsumerService.DailyColumns` с `NpgsqlDbType.Double`).
 
 ### 3.2 Сводка по месторождению (`/api/Analytics/summary`)
@@ -187,12 +193,12 @@ GROUP BY well_id, year, month
 `ClickHouseAnalyticsService.GetSummaryAsync` — один SQL:
 
 ```sql
-SELECT sum(oil_vol_sum), sum(gas_vol_sum), sum(water_vol_sum),
-       sum(water_injection_vol_sum), sum(on_stream_hrs_sum), sum(days_count)
-FROM gp.monthly_production
+SELECT sum(oil_vol), sum(gas_vol), sum(water_vol), sum(water_injection_vol),
+       sum(on_stream_hrs), count()
+FROM gp.production_daily FINAL
 ```
 
-То есть сводка — сумма помесячных сумм за всё время, `totalDays` — сумма `days_count`.
+То есть сводка — сумма суточных полей за всё время, `totalDays` — `count()` суточных строк (15 634).
 
 ### 3.3 Обводнённость и доля
 
@@ -207,13 +213,13 @@ FROM gp.monthly_production
 
 ### 3.4 Структура выгрузок
 
-**`GET /api/Reports/monthly.xlsx`** (ClosedXML, шапка жирная, автоширина, числовой формат `#,##0.00`):
+**`GET /api/Reports/monthly.xlsx`** (ClosedXML, шапка жирная, автоширина, числовой формат `#,##0.00`); объёмы в подписях — в стандартных кубометрах (`Sm³`, стандартный кубометр при стандартных условиях):
 
 | Лист | Содержимое |
 | --- | --- |
-| «Сводка» | «Показатель»/«Значение»: Суммарная нефть, м³; Суммарная вода, м³; Период; Число скважин |
-| «Помесячно» | Год, Месяц, Нефть (м³), Вода (м³), Обводнённость (%) |
-| «По скважинам» | Скважина, Нефть (м³), Вода (м³), Доля (%) |
+| «Сводка» | «Показатель»/«Значение»: Суммарная нефть, Sm³; Суммарная вода, Sm³; Период; Число скважин |
+| «Помесячно» | Год, Месяц, Нефть (Sm³), Вода (Sm³), Обводнённость (%) |
+| «По скважинам» | Скважина, Нефть (Sm³), Вода (Sm³), Доля (%) |
 
 **`GET /api/Reports/monthly.csv`**: `Year,Month,OilVol,WaterVol,WaterCutPct`, UTF-8 с BOM, разделитель — запятая, числа в `0.00` (InvariantCulture).
 
@@ -221,7 +227,7 @@ FROM gp.monthly_production
 
 | Лист | Содержимое |
 | --- | --- |
-| «Скважина» | Скважина; Месторождение; Суммарная нефть, м³; Суммарная вода, м³; Период; Доля от добычи месторождения, % |
+| «Скважина» | Скважина; Месторождение; Суммарная нефть, Sm³; Суммарная вода, Sm³; Период; Доля от добычи месторождения, % |
 | «Помесячно» | те же колонки, что в отчёте по месторождению |
 
 «Период» строится как `YYYY-MM — YYYY-MM` по первому и последнему элементу помесячного набора (`BuildPeriod`), при пустых данных — `—`.
@@ -229,8 +235,10 @@ FROM gp.monthly_production
 ## 4. Открытые вопросы
 
 1. **Периоды и фильтры в UI.** API умеет `from`/`to`/`sort`/`page`, но клиент это не использует. Нужны ли фильтры на карте и отчётах — [УТОЧНИТЬ].
-2. **`null` → `0` в ClickHouse.** Из-за этого «нет данных» и «ноль» неразличимы в аналитике: например, `days_count` учитывает все строки, а `avg_*` поля отсутствующих значений дают `0`, а не пропуск. Приемлемо ли это для отчётности — [УТОЧНИТЬ].
-3. **`/health` не проверяет ClickHouse и Kafka.** Страница может вернуть 200 при недоступной аналитике (тогда `/api/Analytics/*` падает с 500). Нужны ли отдельные пробы — [УТОЧНИТЬ].
-4. **Число 526 агрегатов и 15 634 строки** подтверждены на текущем стенде (`count()` по `gp.monthly_production` и `gp.production_daily`/`daily_production`). Совпадут ли они на другой версии датасета Volve — [УТОЧНИТЬ].
-5. **`Analytics` принимает два идентификатора.** `/api/Analytics/monthly` поддерживает и `wellId`, и `wellCode` (прежний контракт); остальные ресурсы скважины адресуются только кодом НПД. Нужно ли оставить `wellId` в аналитике — [УТОЧНИТЬ].
+2. **`null` → `0` в ClickHouse.** Из-за этого «нет данных» и «ноль» неразличимы в аналитике: например, `days_count` учитывает все строки, а `avg_*` поля отсутствующих значений дают `0`, а не пропуск. **Решение:** оставляем как есть: `Nullable(Float64)` — штраф по производительности ради семантики «нет данных», для исторического датасета неактуальной; сутки без добычи и сутки с нулевой добычей для аналитики равнозначны.
+3. **`/health` не проверяет ClickHouse и Kafka.** Страница может вернуть 200 при недоступной аналитике (тогда `/api/Analytics/*` падает с 500). **План:** `/health` расширяется полем `clickhouse`: проба `http://clickhouse:8123/ping`, значения `up`|`down`; 503 при недоступности CH **не** поднимается (аналитика деградирует, сервис жив). Проверка `deploy.sh` по подстроке `"database":"up"` не ломается — поле добавляется рядом. Отдельная задача, не входит в ADR-016.
+4. **Число 526 агрегатов и 15 634 строки** подтверждены на текущем стенде: 15 634 — `count()` по `gp.production_daily`/`daily_production`, 526 — число строк ответа `GET /api/Analytics/monthly` (агрегат считается на лету, предвычисленной таблицы нет). Совпадут ли они на другой версии датасета Volve — [УТОЧНИТЬ].
+5. **`Analytics` принимает два идентификатора.** `/api/Analytics/monthly` поддерживает и `wellId`, и `wellCode` (прежний контракт); остальные ресурсы скважины адресуются только кодом НПД. **Решение:** фронтенд переводится на `wellCode` (политика ADR-013), затем `wellId` удаляется отдельным ADR. Триггер: следующая ML-фича.
 6. **Страница «Прогноз» — заготовка.** `web/forecast.js` обращается к `/api/Forecast/field` и `/api/Forecast/wells/{wellId}`, но контроллера нет: страница показывает «Прогноз недоступен». Эндпоинты и контракт появятся в задаче по ML-прогнозу; удалять страницу не планируется.
+
+Последняя сверка с кодом: 2026-11-10

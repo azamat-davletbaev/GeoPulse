@@ -46,7 +46,7 @@ TOPIC_PARTITIONS="${TOPIC_PARTITIONS:-3}"
 PG_CONTAINER="${PG_CONTAINER:-geopulse-postgres}"
 CORE_CONTAINERS=(
   geopulse-postgres geopulse-kafka geopulse-clickhouse
-  geopulse-consumer geopulse-chingest geopulse-aggregator
+  geopulse-consumer geopulse-chingest
   geopulse-webapi geopulse-caddy
 )
 

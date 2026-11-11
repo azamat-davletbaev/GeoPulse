@@ -7,7 +7,7 @@
 
 - Образы собирает GitHub Actions (`.github/workflows/pipeline.yml`) и публикует
   в GitHub Container Registry: `ghcr.io/<OWNER>/geopulse-*` (webapi, consumer,
-  chingest, aggregator, ingestion). Теги — короткий SHA коммита и `latest`.
+  chingest, ingestion). Теги — короткий SHA коммита и `latest`.
 - На сервер копируются только файлы деплоя: `docker-compose.prod.yml`,
   `Caddyfile`, `.env` (секреты) и `sql/seed_well_locations.sql` (сид координат устьев).
 - Данные Volve **запечены в образ `geopulse-ingestion`** — сервер их отдельно не скачивает.
@@ -19,8 +19,8 @@
 Сервер пулит образы без логина, поэтому пакеты должны быть публичными.
 По умолчанию пакеты, публикуемые в приватный репозиторий, имеют приватную видимость.
 
-Для каждого из пяти пакетов (`geopulse-webapi`, `geopulse-consumer`,
-`geopulse-chingest`, `geopulse-aggregator`, `geopulse-ingestion`):
+Для каждого из четырёх пакетов (`geopulse-webapi`, `geopulse-consumer`,
+`geopulse-chingest`, `geopulse-ingestion`):
 
 1. GitHub → профиль → **Packages** (или репозиторий → вкладка **Packages**).
 2. Откройте пакет `geopulse-*`.
@@ -147,7 +147,7 @@ nano .env
 cd /opt/geopulse
 
 # 1) Постоянный состав (postgres, kafka, clickhouse, consumer, chingest,
-#    aggregator, webapi, caddy). Ingestion НЕ входит в up -d.
+#    webapi, caddy). Ingestion НЕ входит в up -d.
 docker compose -f docker-compose.prod.yml up -d
 
 # 2) Дождаться готовности Kafka/Postgres/ClickHouse:
@@ -156,21 +156,20 @@ docker compose -f docker-compose.prod.yml ps
 # 3) Одноразовый импорт данных (публикует события в Kafka):
 docker compose -f docker-compose.prod.yml run --rm ingestion
 
-# 4) Дождаться, пока consumer/chingest/aggregator обработают события
-#    (aggregator пересобирает gp.monthly_production каждые 60 с):
+# 4) Дождаться, пока consumer/chingest обработают события:
 rows=0
 for attempt in $(seq 1 10); do
-  rows=$(docker exec geopulse-clickhouse clickhouse-client --query "SELECT count() FROM gp.monthly_production" 2>/dev/null | tr -d '[:space:]')
+  rows=$(docker exec geopulse-clickhouse clickhouse-client --query "SELECT count() FROM gp.production_daily" 2>/dev/null | tr -d '[:space:]')
   rows=${rows:-0}
   if [ "$rows" -gt 0 ]; then
-    echo "Готово: в gp.monthly_production ${rows} строк (попытка ${attempt}/10)"
+    echo "Готово: в gp.production_daily ${rows} строк (попытка ${attempt}/10)"
     break
   fi
-  echo "Попытка ${attempt}/10: агрегатов пока нет, ждём 10 с..."
+  echo "Попытка ${attempt}/10: суточных строк пока нет, ждём 10 с..."
   sleep 10
 done
 if [ "${rows:-0}" -eq 0 ]; then
-  echo "ВНИМАНИЕ: агрегатор ещё не собрал данные, проверьте логи chingest/aggregator" >&2
+  echo "ВНИМАНИЕ: ClickHouse пуст, проверьте логи chingest/consumer" >&2
 fi
 
 # 5) Сид координат устьев (нужен для маркеров на карте):
@@ -197,7 +196,7 @@ curl -s -o /dev/null -w 'по домену: %{http_code}\n' https://geopulse-dem
 curl -s -o /dev/null -w 'по IP:     %{http_code}\n' "http://$FALLBACK_IP/"
 ```
 
-Порядок важен: сначала оба читателя (consumer, chingest) и агрегатор должны быть
+Порядок важен: сначала оба читателя (consumer, chingest) должны быть
 подняты, затем — импорт. Повторный запуск `ingestion` безопасен: запись в
 PostgreSQL идемпотентна (`ON CONFLICT DO NOTHING`), ClickHouse дедуплицирует
 дубли через `ReplacingMergeTree` (чтение `FINAL`).
@@ -278,6 +277,8 @@ docker compose -f docker-compose.prod.yml up -d
 
 Лимиты в `docker-compose.prod.yml` — это верхние границы (потолки), а не резервирование:
 Postgres `256m`, Kafka heap `-Xmx384m` (контейнер `768m`), ClickHouse `768m`,
-каждый .NET-сервис `256m`. При нехватке памяти OOM-killer убьёт контейнер,
+каждый .NET-сервис `256m` (`consumer`, `chingest`, `webapi`). При нехватке памяти OOM-killer убьёт контейнер,
 `restart: unless-stopped` его поднимет. Если OOM повторяется — уменьшите лимиты
 ClickHouse/Kafka или число одновременных .NET-сервисов в пике.
+
+Последняя сверка с кодом: 2026-11-10

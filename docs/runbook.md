@@ -31,13 +31,13 @@ COMPOSE="docker compose -f docker-compose.prod.yml"
 $COMPOSE ps
 # статус здоровья каждого контейнера одной строкой
 for c in geopulse-postgres geopulse-kafka geopulse-clickhouse geopulse-consumer \
-         geopulse-chingest geopulse-aggregator geopulse-webapi geopulse-caddy; do
+         geopulse-chingest geopulse-webapi geopulse-caddy; do
   printf '%-24s %s\n' "$c" \
     "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $c 2>/dev/null || echo missing)"
 done
 ```
 
-Ожидаемые имена: `geopulse-postgres`, `geopulse-kafka`, `geopulse-clickhouse`, `geopulse-consumer`, `geopulse-chingest`, `geopulse-aggregator`, `geopulse-webapi`, `geopulse-caddy`. Контейнер `geopulse-ingestion` одноразовый — в постоянном составе его быть не должно.
+Ожидаемые имена: `geopulse-postgres`, `geopulse-kafka`, `geopulse-clickhouse`, `geopulse-consumer`, `geopulse-chingest`, `geopulse-webapi`, `geopulse-caddy`. Контейнер `geopulse-ingestion` одноразовый — в постоянном составе его быть не должно.
 
 **Логи конкретного сервиса**
 
@@ -45,7 +45,6 @@ done
 $COMPOSE logs -f --tail 100 webapi
 $COMPOSE logs --tail 200 consumer
 $COMPOSE logs --tail 200 chingest
-$COMPOSE logs --tail 200 aggregator
 $COMPOSE logs --tail 200 caddy
 ```
 
@@ -67,7 +66,7 @@ curl -fsS https://<DOMAIN>/health
 curl -fsS "http://<FALLBACK_IP>/health"
 ```
 
-Ответ: `{"status":"ok","database":"up","checkedAtUtc":"..."}` — код 200. Если БД недоступна — код 503 и `"database":"down"`, `"status":"degraded"`. Проверяется **только PostgreSQL** (ClickHouse/Kafka в `/health` не участвуют).
+Ответ: `{"status":"ok","database":"up","checkedAtUtc":"..."}` — код 200. Если БД недоступна — код 503 и `"database":"down"`, `"status":"degraded"`. Проверяется **только PostgreSQL** (ClickHouse/Kafka в `/health` не участвуют). План расширения пробы на ClickHouse — `docs/features.md`, открытый вопрос 3.
 
 **Kafka**
 
@@ -85,9 +84,7 @@ $COMPOSE exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-serve
 
 ```bash
 $COMPOSE exec -T clickhouse clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
-  --query "select count() from gp.production_daily"
-$COMPOSE exec -T clickhouse clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
-  --query "select count() from gp.monthly_production"
+  --query "select count() from gp.production_daily"   # ожидаемо 15 634 суточных строк
 ```
 
 **PostgreSQL**
@@ -105,7 +102,7 @@ $COMPOSE exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'select 
 
 1. Пуш в `main` (или ручной запуск `workflow_dispatch`) → единый workflow `.github/workflows/pipeline.yml` (имя `CI/CD Pipeline`).
 2. Jobs `build-and-test` (сборка solution, `dotnet format --verify-no-changes`, проверка EF-модели, `dotnet test`) и `frontend-check` (`node tests/frontend/webapp-check.js mixed` и `... empty`) должны завершиться успешно.
-3. Job `build-and-push` объявляет `needs: [build-and-test, frontend-check]`, поэтому образы (`webapi`, `consumer`, `chingest`, `aggregator`, `ingestion`) собираются только после зелёных тестов, и публикуются в ghcr.io с двумя тегами: короткий SHA (`${GITHUB_SHA::7}`) и `latest`.
+3. Job `build-and-push` объявляет `needs: [build-and-test, frontend-check]`, поэтому образы (`webapi`, `consumer`, `chingest`, `ingestion`) собираются только после зелёных тестов, и публикуются в ghcr.io с двумя тегами: короткий SHA (`${GITHUB_SHA::7}`) и `latest`.
 4. Job `deploy` (`needs: [build-and-push]`, только для `main`, с `concurrency: production-deploy`) по SSH (`appleboy/ssh-action@v1.2.0`) выполняет на сервере:
 
 ```bash
@@ -130,7 +127,7 @@ bash ./deploy.sh
 | 6 | Миграции EF Core **до** старта сервисов: если в `src/GeoPulse.Infrastructure/Migrations` миграций больше, чем записей в `__EFMigrationsHistory`, поднимается одноразовый контейнер `geopulse-migrator` на образе `consumer` (он применяет миграции при старте), скрипт ждёт нужного количества записей и удаляет контейнер |
 | 7 | Идемпотентно создаёт топики `production-daily` и `production-daily-dlq` (`--if-not-exists`, `--partitions 3`, `--replication-factor 1`) и печатает список топиков |
 | 8 | `docker compose up -d --remove-orphans` — поднимает/пересоздаёт сервисы на новом теге |
-| 9 | Health-check `GET /health` до 60 с (30 попыток по 2 с): сначала через `caddy wget http://webapi:5146/health`, при неудаче — временный контейнер `curlimages/curl` в сети `geopulse-webapi`. Затем проверяет, что все 8 контейнеров `healthy`/`running` |
+| 9 | Health-check `GET /health` до 60 с (30 попыток по 2 с): сначала через `caddy wget http://webapi:5146/health`, при неудаче — временный контейнер `curlimages/curl` в сети `geopulse-webapi`. Затем проверяет, что все 7 контейнеров `healthy`/`running` |
 | 10 | `docker image prune -f` (только висячие образы; старые теги остаются для отката) и печатает сводку: SHA, коммит, тег, предыдущий тег, домен, статусы контейнеров |
 
 Повторный запуск безопасен: `pull`/`up` идемпотентны, топики создаются с `--if-not-exists`, миграции пропускаются, если уже применены.
@@ -194,9 +191,9 @@ docker inspect -f '{{.State.Status}} / {{if .State.Health}}{{.State.Health.Statu
 docker compose -f docker-compose.prod.yml exec -T postgres \
   psql -U <POSTGRES_USER> -d <POSTGRES_DB> -c "select count(*) from daily_production; select count(*) from wells;"
 
-# 2. Данные в ClickHouse (графики и отчёты)
+# 2. Данные в ClickHouse (графики и отчёты; помесячные суммы считаются на лету)
 docker compose -f docker-compose.prod.yml exec -T clickhouse clickhouse-client \
-  --user <CLICKHOUSE_USER> --password <CLICKHOUSE_PASSWORD> -q "select count() from gp.monthly_production"
+  --user <CLICKHOUSE_USER> --password <CLICKHOUSE_PASSWORD> -q "select count() from gp.production_daily"
 
 # 3. API
 curl -fsS https://<DOMAIN>/api/Analytics/summary
@@ -206,9 +203,8 @@ curl -fsS https://<DOMAIN>/api/Analytics/summary
 | --- | --- | --- |
 | `wells` и `daily_production` пусты | ingestion ни разу не запускался | `docker compose -f docker-compose.prod.yml run --rm ingestion` (профиль `init`, в постоянный состав не входит) |
 | `geopulse-consumer` сразу `Exited`, в логах `ConsumeException: Subscribed topic not available` | в Kafka нет топика `production-daily`: подписка консьюмера топик не создаёт (KIP-361) | топик создаёт сам консьюмер при старте (ADR-015); если образ старый — `docker compose up -d --build consumer`, либо вручную: `kafka-topics.sh --bootstrap-server localhost:29092 --create --topic production-daily --partitions 1 --replication-factor 1 --if-not-exists` |
-| PostgreSQL заполнен, ClickHouse пуст | `chingest`/`aggregator` не работали или упали | `logs chingest`, `logs aggregator`, затем перезапустить оба |
-| `monthly_production` пуст, `production_daily` заполнен | агрегатор не успел отработать или упал | `logs aggregator`; он пересчитывает на старте и далее каждые 60 с |
-| `/api/Analytics/summary` отдаёт нули | агрегат пересчитан по пустым данным | проверить `select count() from gp.production_daily` |
+| PostgreSQL заполнен, ClickHouse пуст | `chingest` не работал или упал | `logs chingest`, затем `docker compose -f docker-compose.prod.yml restart chingest` |
+| `/api/Analytics/summary` отдаёт нули | в ClickHouse нет суточных строк | проверить `select count() from gp.production_daily` (ожидаемо 15 634) |
 | на карте нет маркеров | не загружен сид координат `well_locations` | `psql -U <POSTGRES_USER> -d <POSTGRES_DB> < sql/seed_well_locations.sql` |
 | на карте нет линий траекторий | `well.trajectory` не пришли или таблица пуста | `select count(*) from well_trajectories;` и `logs consumer` |
 | данные есть, но часть событий не дошла | сообщения в DLQ | команда чтения `production-daily-dlq` из раздела 1; причина — в заголовке `reason` |
@@ -237,7 +233,7 @@ docker compose -f docker-compose.prod.yml exec -T clickhouse clickhouse-client \
   --user <CLICKHOUSE_USER> --password <CLICKHOUSE_PASSWORD> -q "show databases"
 ```
 
-Типовые причины: OOM (лимит `768m`), неверный `CLICKHOUSE_PASSWORD` в `.env` (тогда падают `chingest`, `aggregator`, `webapi`), таблицы ещё не созданы — их создают `chingest`/`aggregator` при старте, отдельных DDL-скриптов в репозитории нет.
+Типовые причины: OOM (лимит `768m`), неверный `CLICKHOUSE_PASSWORD` в `.env` (тогда падают `chingest`, `webapi`), таблицы ещё не созданы — их создаёт `chingest` при старте, отдельных DDL-скриптов в репозитории нет.
 
 ### 3.5 Проблема с TLS-сертификатом Caddy
 
@@ -290,14 +286,95 @@ docker exec -i geopulse-postgres pg_restore -U <POSTGRES_USER> -d <POSTGRES_DB> 
 
 Куда складывать: локально в `/opt/geopulse/backup` (каталог `backup/` в `.gitignore`). Вынос копий за пределы сервера (S3, `rsync` на другую машину) в проекте **не реализован**.
 
-Что **не** покрыто бэкапом: ClickHouse (`gp.*` восстанавливается переигрыванием Kafka и пересборкой агрегатора), тома Kafka, том `caddy_data` (сертификаты Caddy выпустит заново).
+Что **не** покрыто бэкапом: ClickHouse (`gp.*` восстанавливается переигрыванием Kafka), тома Kafka (`kafkadata` — см. открытый вопрос 4), том `caddy_data` (сертификаты Caddy выпустит заново), файл `.env` (см. пункт ниже).
 
-## 5. Открытые вопросы
+**`.env` бэкапится отдельно.** Файл лежит вне репозитория и содержит `DOMAIN`, `POSTGRES_PASSWORD`, `CLICKHOUSE_PASSWORD`, `DOCKER_TAG`. `scripts/backup-pg.sh` его **не** покрывает: скрипт делает только `pg_dump` внутри контейнера `geopulse-postgres`. Без `.env` стек не поднимется на новом сервере, поэтому копия ведётся вручную и хранится вне сервера (менеджер паролей или зашифрованный архив).
+
+## 5. Мониторинг диска и ресурсов
+
+Сервер демо — 1 vCPU / 2 ГБ RAM / 32 ГБ диск, поэтому место на диске и память исчерпываются первыми.
+
+```bash
+# свободное место и inode на хосте
+df -h
+df -i
+
+# образы, контейнеры, тома и кэш сборки: сводка и детализация
+docker system df
+docker system df -v
+
+# потребление CPU/памяти по контейнерам одним снимком (без интерактива)
+docker stats --no-stream
+
+# размеры томов проекта (pgdata / chdata / caddy_*)
+sudo du -sh /var/lib/docker/volumes/geopulse_*
+```
+
+Ориентиры: при свободном месте меньше ~3 ГБ — `docker image prune -f` и разбор `docker system df -v`; рост `geopulse_chdata` — это суточные строки ClickHouse, рост `geopulse_pgdata` — `daily_production`, `well_trajectories` и индексы.
+
+### 5.1 Ротация логов контейнеров
+
+Цель: ограничить рост логов, чтобы циклы ретраев (`restart: unless-stopped`, `restart: on-failure`) не забили диск. Требуемая настройка — для всех сервисов обоих compose-файлов:
+
+```yaml
+logging:
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+```
+
+**Текущее состояние:** в `docker-compose.yml` и `docker-compose.prod.yml` блоки `logging` пока **не заданы**, поэтому размер логов ограничен только `daemon.json` хоста. Проверить фактические размеры:
+
+```bash
+sudo du -sh /var/lib/docker/containers/*/*-json.log | sort -h | tail -5
+```
+
+[УТОЧНИТЬ] — ротация (json-file, `max-size: 10m`, `max-file: 3`) в compose ещё не добавлена; после правки compose этот пункт станет утверждением без оговорок.
+
+### 5.2 Лимиты памяти контейнеров
+
+Из `docker-compose.prod.yml` (`mem_limit` — верхняя граница, а не резервирование памяти):
+
+| Сервис | `mem_limit` | Особенности | Признак исчерпания |
+| --- | --- | --- | --- |
+| `postgres` | `256m` | БД небольшая: ~15 тыс. строк добычи плюс справочники | `OOMKilled: true` в `docker inspect`; `restart: unless-stopped` поднимает контейнер заново |
+| `kafka` | `768m` | JVM heap ограничен отдельно: `KAFKA_HEAP_OPTS=-Xmx384m` | то же: `OOMKilled`, затем перезапуск |
+| `clickhouse` | `768m` | плюс `ulimits.nofile` 262144 | то же: `OOMKilled`, затем перезапуск |
+| `consumer` | `256m` | .NET-сервис, читает Kafka и пишет в PostgreSQL | то же: `OOMKilled`, затем перезапуск |
+| `chingest` | `256m` | .NET-сервис, пишет в ClickHouse | то же: `OOMKilled`, затем перезапуск |
+| `webapi` | `256m` | .NET-сервис, healthcheck `/health` каждые 10 с | то же: `OOMKilled`, затем перезапуск |
+| `caddy` | не задан | TLS и проксирование на `webapi:5146` | лимита нет — следить через `docker stats` |
+| `ingestion` | не задан | одноразовый запуск (`profiles: ["init"]`) | лимита нет — следить через `docker stats` |
+
+Проверка, был ли контейнер убит по памяти:
+
+```bash
+docker inspect -f '{{.Name}} OOMKilled={{.State.OOMKilled}} restarts={{.RestartCount}}' \
+  $(docker compose -f docker-compose.prod.yml ps -q)
+```
+
+`restart: unless-stopped` перезапускает упавший контейнер, поэтому единственный след OOM может остаться только в `OOMKilled`/`RestartCount`.
+
+## 6. Нагрузочная проверка (запланировано)
+
+Раздел зарезервирован: замеры ещё не проводились, таблица фиксирует план сценариев.
+
+| Сценарий | Что проверяем | Как | Статус |
+| --- | --- | --- | --- |
+| Полный импорт фонда | время от старта `ingestion` до полного набора суточных строк в PostgreSQL и ClickHouse | `docker compose -f docker-compose.prod.yml run --rm ingestion` + опрос `select count() from gp.production_daily` | в фазе нагрузочного тестирования |
+| k6: карта и карточка скважины | p95 времени ответа `GET /api/wells`, `/api/wells/{npdWellBoreCode}`, `/trajectory`, `/production` | k6-сценарий через Caddy по домену | в фазе нагрузочного тестирования |
+| k6: отчёты | p95 и объём ответа `GET /api/Reports/monthly.xlsx`, `monthly.csv`, `/wells/{npdWellBoreCode}.xlsx` | k6-сценарий через Caddy по домену | в фазе нагрузочного тестирования |
+| Отказ ClickHouse | поведение `/api/Analytics/*` и `/health` при недоступной аналитике | `docker compose -f docker-compose.prod.yml stop clickhouse`, затем серия запросов | в фазе нагрузочного тестирования |
+
+## 7. Открытые вопросы
 
 1. **Автобэкап не настроен.** Скрипт `scripts/backup-pg.sh` есть, cron-строки в проекте нет (только в `DEPLOY.md`). Ставить ли её автоматически в `bootstrap-server.sh` — [УТОЧНИТЬ].
 2. **Куда складывать бэкапы вне сервера** — регламента нет (S3 / rsync / второй сервер). [УТОЧНИТЬ].
-3. **Бэкап ClickHouse.** Отдельного скрипта нет; предполагается восстановление переигрыванием Kafka и пересборкой агрегатов, но проверялся ли такой сценарий — [УТОЧНИТЬ].
-4. **Тома Kafka.** В `docker-compose.prod.yml` для Kafka не объявлен именованный том (в отличие от `pgdata`, `chdata`, `caddy_data`, `caddy_config`), поэтому данные брокера живут в анонимном томе контейнера и теряются при пересоздании контейнера. Осознанно ли это (данные переигрываются из ingestion) — [УТОЧНИТЬ].
+3. **Бэкап ClickHouse.** Отдельного скрипта нет; предполагается восстановление переигрыванием Kafka (суточные строки переигрываются из топика `production-daily`, помесячная аналитика считается на лету), но проверялся ли такой сценарий — [УТОЧНИТЬ].
+4. **Тома Kafka.** Статус: **решено** — данные брокера живут в именованном томе `kafkadata`, поэтому после пересоздания контейнера офсеты и данные топиков сохраняются; источник истины по конфигу — compose-файл (детали конфигурации здесь не дублируются). [УТОЧНИТЬ] — на момент сверки в `docker-compose.prod.yml` объявлены только `pgdata`, `chdata`, `caddy_data`, `caddy_config`: объявление `kafkadata` нужно подтвердить по актуальному compose.
 5. **Порт SSH.** `pipeline.yml` (job `deploy`) жёстко использует `port: 22`, хотя `bootstrap-server.sh` принимает `SSH_PORT` и открывает его в UFW. Если SSH на сервере не на 22, деплой из CI не пройдёт — [УТОЧНИТЬ], нужно ли выносить порт в секрет.
 6. **Мониторинг.** Алертов по `/health`, размеру DLQ и свободному месту на диске нет — только проверки внутри `deploy.sh` в момент релиза. Нужен ли внешний uptime-мониторинг — [УТОЧНИТЬ].
 7. **Откат миграций.** Механизм отката меняет только тег образа; `Down`-миграции не запускаются. Регламент для несовместимых миграций — [УТОЧНИТЬ].
+
+Последняя сверка с кодом: 2026-11-10

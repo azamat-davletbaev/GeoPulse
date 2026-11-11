@@ -5,7 +5,8 @@ namespace GeoPulse.Tests.Integration;
 /// <summary>
 /// Интеграционные тесты /api/Analytics/monthly и /summary на реальном ClickHouse (fixture).
 /// SQL и маппинг проверяются как в проде: читатель подключается к Testcontainers-ClickHouse,
-/// схема создаётся тем же ClickHouseSchema, что используют CHIngest и Aggregator.
+/// схема создаётся тем же ClickHouseSchema, что использует CHIngest, а помесячные агрегаты
+/// считаются на лету из суточных строк (ADR-016).
 /// </summary>
 [Collection("integration")]
 [Trait("Category", "Integration")]
@@ -117,25 +118,28 @@ public sealed class AnalyticsContractDataTests
 
     private async Task SeedMonthlyAsync()
     {
-        // Схема создаётся общим ClickHouseSchema — тем же кодом, что в CHIngest и Aggregator.
+        // Схема создаётся общим ClickHouseSchema — тем же кодом, что в CHIngest.
         await ClickHouseSchema.EnsureAsync(
             _fixture.ClickHouseConnectionString,
             new[]
             {
                 ClickHouseSchema.CreateDatabaseSql,
-                ClickHouseSchema.CreateMonthlyProductionSql
+                ClickHouseSchema.CreateProductionDailySql
             });
 
         await using var connection = new ClickHouseConnection(_fixture.ClickHouseConnectionString);
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
 
-        command.CommandText = $"TRUNCATE TABLE IF EXISTS {ClickHouseSchema.MonthlyProductionTable}";
+        command.CommandText = $"TRUNCATE TABLE IF EXISTS {ClickHouseSchema.ProductionDailyTable}";
         await command.ExecuteNonQueryAsync();
 
+        // Одна суточная строка даёт один помесячный агрегат (days_count = 1), поэтому ожидания
+        // тестов не изменились: 100.5 нефти, 10.5 газа и т.д. за январь 2016.
         command.CommandText =
-            $"INSERT INTO {ClickHouseSchema.MonthlyProductionTable} VALUES " +
-            "(5351, 2016, 1, 100.5, 10.5, 20.5, 30.5, 24.0, 1)";
+            $"INSERT INTO {ClickHouseSchema.ProductionDailyTable} " +
+            "(well_id, npd_well_bore_code, date, oil_vol, gas_vol, water_vol, water_injection_vol, on_stream_hrs) " +
+            "VALUES (5351, 5351, '2016-01-15', 100.5, 10.5, 20.5, 30.5, 24.0)";
         await command.ExecuteNonQueryAsync();
     }
 }

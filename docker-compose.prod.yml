@@ -1,6 +1,6 @@
 # Прод-стек GeoPulse.
 # Постоянный состав (docker compose up -d): postgres, kafka, clickhouse,
-# consumer, chingest, aggregator, webapi, caddy.
+# consumer, chingest, webapi, caddy.
 # Ingestion — одноразовый запуск (docker compose run --rm ingestion), в постоянный
 # состав не входит (профиль "init").
 #
@@ -120,18 +120,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-
-  aggregator:
-    image: ghcr.io/${OWNER:-azamat-davletbaev}/geopulse-aggregator:${DOCKER_TAG:-latest}
-    container_name: geopulse-aggregator
-    restart: unless-stopped
-    environment:
-      ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Database=${CLICKHOUSE_DB:-gp};Username=${CLICKHOUSE_USER:-geopulse};Password=${CLICKHOUSE_PASSWORD}
-      RecalcIntervalSeconds: "60"
-    mem_limit: 256m
-    depends_on:
       clickhouse:
         condition: service_healthy
 

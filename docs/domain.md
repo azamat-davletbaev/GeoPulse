@@ -8,7 +8,7 @@
 | `src/GeoPulse.Infrastructure/CoreDbContext.cs`, `Entities/*.cs` | модель EF Core, имена колонок (snake_case), связи |
 | `src/GeoPulse.Core/Models/*.cs` | доменные модели и их семантика |
 | `src/GeoPulse.Core/Events/*.cs` | поля событий, типы, версия схемы |
-| `src/GeoPulse.CHIngest/CHIngestService.cs`, `src/GeoPulse.Aggregator/AggregatorService.cs` | DDL ClickHouse: таблицы, движки, `ORDER BY` |
+| `src/GeoPulse.CHIngest/CHIngestService.cs` | DDL ClickHouse: таблицы, движки, `ORDER BY` |
 | `src/GeoPulse.Ingestion.Service/IngestionService.cs`, `TrajectoryParser.cs` | какие колонки Excel и поля WITSML читаются |
 | `src/GeoPulse.WebAPI/Reports/ReportMetrics.cs`, `web/app.js` | формулы обводнённости и доли |
 | `sql/seed_well_locations.sql` | координаты устьев и датум |
@@ -23,7 +23,7 @@
 | Натуральный ключ | `npdWellBoreCode` — код ствола в Норвежском нефтяном директорате. Уникален (`IX_wells_npd_well_bore_code`), используется в URL API и в ключе сообщений Kafka. |
 | Тип скважины | `type` — самое частое значение `WELL_TYPE` (`OP` — добывающая, `WI` — нагнетательная). |
 | Суточная добыча | Строка в `daily_production` / `gp.production_daily`: дата + 13 числовых показателей. |
-| Помесячная добыча | Агрегат в `gp.monthly_production`: сумма объёмов и `count()` суток за (скважина, год, месяц). |
+| Помесячная добыча | Агрегат считается на лету из `gp.production_daily` (FINAL): сумма объёмов и `count()` суток за (скважина, год, месяц); предвычисленной таблицы нет (ADR-016). |
 | Устье | Координаты WGS84 в `well_locations` (широта/долгота) — для маркера на карте. |
 | Траектория | Замеры в `well_trajectories` (MD, TVD, зенитный угол, азимут, Easting/Northing в ED50/UTM31N) — ломаная на карте. |
 | Забой | `well_trajectory_meta.td_md` / `td_tvd` — из заголовка выгрузки (`Bottom Hole MD/TVD`). |
@@ -65,7 +65,7 @@ private static double SharePct(double oil, double totalOil)
 }
 ```
 
-`totalOil` — `sum(oil_vol_sum)` по всему `gp.monthly_production` (запрос `GetSummaryAsync`). В панели скважины на карте (`web/app.js`) знаменатель берётся из `GET /api/Analytics/summary` (`loadFieldTotalOil`), числитель — сумма `oilVolSum` по скважине.
+`totalOil` — `sum(oil_vol)` по всему `gp.production_daily` (запрос `GetSummaryAsync`, чтение с `FINAL`; предвычисленной таблицы агрегатов нет — ADR-016). В панели скважины на карте (`web/app.js`) знаменатель берётся из `GET /api/Analytics/summary` (`loadFieldTotalOil`), числитель — сумма `oilVolSum` по скважине.
 
 ### 1.3 Пик добычи и период работы
 
@@ -146,7 +146,7 @@ PK (`well_id`, `md`) — на неё опирается `ON CONFLICT (well_id, m
 
 ## 3. Схема ClickHouse
 
-База — `gp`. Все три таблицы создаются самими сервисами: `ClickHouseSchema` (`src/GeoPulse.ClickHouse/ClickHouseSchema.cs`) содержит DDL базы и таблиц, а `ClickHouseSchema.EnsureAsync` выполняет `CREATE DATABASE IF NOT EXISTS gp` и `CREATE TABLE IF NOT EXISTS` при старте CHIngest и Aggregator, поэтому отдельного DDL-файла в репозитории нет.
+База — `gp`. Обе таблицы создаются самим сервисом: `ClickHouseSchema` (`src/GeoPulse.ClickHouse/ClickHouseSchema.cs`) содержит DDL базы и таблиц, а `ClickHouseSchema.EnsureAsync` выполняет `CREATE DATABASE IF NOT EXISTS gp` и `CREATE TABLE IF NOT EXISTS` при старте `CHIngest`, поэтому отдельного DDL-файла в репозитории нет.
 
 ### 3.1 `gp.production_daily`
 
@@ -162,25 +162,9 @@ ENGINE = ReplacingMergeTree ORDER BY (npd_well_bore_code, date)
 | `oil_vol`, `gas_vol`, `water_vol`, `water_injection_vol` | `Float64` |
 | `on_stream_hrs`, `avg_downhole_pressure`, `avg_downhole_temperature`, `avg_dp_tubing`, `avg_annulus_pressure`, `avg_choke_size`, `avg_whp`, `avg_wht`, `dp_choke_size` | `Float64` |
 
-Ключ сортировки — (`npd_well_bore_code`, `date`), хотя `well_id` тоже хранится: дедупликация `ReplacingMergeTree` идёт по ключу сортировки, а не по `well_id`. Чтение обязано идти с `FINAL` — так и делает агрегатор.
+Ключ сортировки — (`npd_well_bore_code`, `date`), хотя `well_id` тоже хранится: дедупликация `ReplacingMergeTree` идёт по ключу сортировки, а не по `well_id`. Чтение обязано идти с `FINAL` — так его делает `ClickHouseAnalyticsService`: помесячные суммы считаются на лету из `gp.production_daily FINAL` (ADR-016).
 
-### 3.2 `gp.monthly_production`
-
-```
-ENGINE = MergeTree ORDER BY (well_id, year, month)
-```
-
-| Колонка | Тип |
-| --- | --- |
-| `well_id` | `UInt32` |
-| `year` | `UInt16` |
-| `month` | `UInt8` |
-| `oil_vol_sum`, `gas_vol_sum`, `water_vol_sum`, `water_injection_vol_sum`, `on_stream_hrs_sum` | `Float64` |
-| `days_count` | `UInt64` |
-
-Обычный `MergeTree` (не `Replacing`), потому что таблица каждый раз пересобирается целиком: `TRUNCATE TABLE gp.monthly_production` → `INSERT ... SELECT`.
-
-### 3.3 `gp.wells`
+### 3.2 `gp.wells`
 
 ```
 ENGINE = ReplacingMergeTree ORDER BY npd_well_bore_code
@@ -254,7 +238,7 @@ ENGINE = ReplacingMergeTree ORDER BY npd_well_bore_code
 | `BORE_WAT_VOL` | `waterVol` |
 | `BORE_WI_VOL` | `waterInjectionVol` |
 
-Дата разбирается тремя способами: `DateTime` из ячейки, Excel-serial (`DateTime.FromOADate` для чисел `1 ≤ x < 100000`) или строка в `InvariantCulture`. Числа — из ячеек `double`/`decimal`/`int`, иначе строка `InvariantCulture`. Пустые и `DBNull` превращаются в `null`. Лист `Monthly Production Data` **не читается**: помесячные агрегаты считает `Aggregator` из суточных.
+Дата разбирается тремя способами: `DateTime` из ячейки, Excel-serial (`DateTime.FromOADate` для чисел `1 ≤ x < 100000`) или строка в `InvariantCulture`. Числа — из ячеек `double`/`decimal`/`int`, иначе строка `InvariantCulture`. Пустые и `DBNull` превращаются в `null`. Лист `Monthly Production Data` **не читается**: помесячные суммы считаются на лету из суточных (ADR-016).
 
 **Шаг 2 — регистрация скважин.** По уникальным `NPD_WELL_BORE_CODE` публикуются события `well.registered` в порядке возрастания кода — до любых других событий, чтобы потребители успели завести строки в `wells`.
 
@@ -296,3 +280,5 @@ ENGINE = ReplacingMergeTree ORDER BY npd_well_bore_code
 4. **Координаты устьев** — статический список на 7 скважин. При добавлении скважин сид-скрипт нужно дополнять вручную; автоматического извлечения `Surface Latitude/Longitude` в коде нет — [УТОЧНИТЬ], нужно ли.
 5. **Совпадение устья и первой точки траектории.** Устье берётся из `well_locations` (сид), а не из первого замера траектории. Совпадают ли они для всех стволов — [УТОЧНИТЬ].
 6. **`days_count` в агрегате** — это `count()` строк `production_daily`, а не число суток с `on_stream_hrs > 0`. Если в датасете есть строки с нулевыми объёмами, «дней с данными» будет больше, чем «дней работы» — [УТОЧНИТЬ], ожидаемое ли это поведение.
+
+Последняя сверка с кодом: 2026-11-10

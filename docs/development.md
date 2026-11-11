@@ -41,7 +41,6 @@ Solution-файл — `GeoPulse.slnx` (XML-формат, не `.sln`). Прое�
 | `src/GeoPulse.Ingestion.Service` | консольное приложение | парсит Excel Volve и текстовые траектории, публикует события в Kafka. В БД не пишет. |
 | `src/GeoPulse.Consumer` | консольное приложение (`BackgroundService`) | Kafka → PostgreSQL, применяет миграции на старте, ошибки в DLQ. |
 | `src/GeoPulse.CHIngest` | консольное приложение (`BackgroundService`) | Kafka → ClickHouse (`gp.production_daily`, `gp.wells`). |
-| `src/GeoPulse.Aggregator` | консольное приложение (`BackgroundService`) | ClickHouse `production_daily` → `monthly_production` по таймеру. |
 | `src/GeoPulse.WebAPI` | ASP.NET Core Web API | REST API + Swagger + раздача статики `web/`. |
 | `tests/GeoPulse.Tests` | xUnit | 103 теста: unit (`Unit/`), контрактные (`Contract/`), интеграционные на Testcontainers (`Integration/`). |
 
@@ -87,7 +86,7 @@ cd GeoPulse
 docker compose up -d --build
 ```
 
-Что произойдёт: скачаются `postgres:17-alpine`, `clickhouse/clickhouse-server:24.8`, `apache/kafka:4.0.0`, `provectuslabs/kafka-ui:latest`; соберутся образы `consumer`, `chingest`, `aggregator` и `webapi`; сервисы стартуют только после healthy-состояния Postgres/ClickHouse/Kafka, `consumer` на старте применит EF Core миграции, `chingest` создаст схему ClickHouse `gp`.
+Что произойдёт: скачаются `postgres:17-alpine`, `clickhouse/clickhouse-server:24.8`, `apache/kafka:4.0.0`, `provectuslabs/kafka-ui:latest`; соберутся образы `consumer`, `chingest` и `webapi`; сервисы стартуют только после healthy-состояния Postgres/ClickHouse/Kafka, `consumer` на старте применит EF Core миграции, `chingest` создаст схему ClickHouse `gp`.
 
 Проверка:
 
@@ -97,7 +96,7 @@ curl http://localhost:5146/health
 # {"status":"ok","database":"up","checkedAtUtc":"..."}
 ```
 
-Ожидаемые контейнеры: `geopulse-postgres`, `geopulse-clickhouse`, `geopulse-kafka`, `geopulse-kafka-ui`, `geopulse-consumer`, `geopulse-chingest`, `geopulse-aggregator`, `geopulse-webapi` (у инфраструктуры и `webapi` есть healthcheck). **`ingestion` и `caddy` в локальный compose не входят** — см. шаги 4 и 7.
+Ожидаемые контейнеры: `geopulse-postgres`, `geopulse-clickhouse`, `geopulse-kafka`, `geopulse-kafka-ui`, `geopulse-consumer`, `geopulse-chingest`, `geopulse-webapi` (у инфраструктуры и `webapi` есть healthcheck). **`ingestion` и `caddy` в локальный compose не входят** — см. шаги 4 и 7.
 
 ### Шаг 3. Миграции (вручную, если нужно)
 
@@ -132,19 +131,18 @@ dotnet run --project src/GeoPulse.Ingestion.Service
 
 ### Шаг 5. Заполнить ClickHouse (для аналитики и отчётов)
 
-`CHIngest` и `Aggregator` входят в локальный compose и стартуют автоматически: `chingest` пишет в ClickHouse (`gp.production_daily`, `gp.wells`) из Kafka, `aggregator` пересчитывает `gp.monthly_production` на старте и далее каждые `RecalcIntervalSeconds` (60 с). Отдельный DDL не нужен — схему `gp` создаёт `ClickHouseSchema.EnsureAsync` при старте этих сервисов.
+`CHIngest` входит в локальный compose и стартует автоматически: пишет в ClickHouse (`gp.production_daily`, `gp.wells`) из Kafka. Отдельного сервиса-пересборщика агрегатов нет — помесячные суммы WebAPI считает на лету из `gp.production_daily` (ADR-016). Отдельный DDL не нужен — схему `gp` создаёт `ClickHouseSchema.EnsureAsync` при старте сервиса.
 
 Проверить, что конвейер отработал:
 
 ```bash
-docker compose logs -f chingest aggregator
+docker compose logs -f chingest
 ```
 
-Для отладки из IDE сервисы можно запустить и с хоста — они берут `ClickHouse:ConnectionString` и `ConnectionStrings:CoreDb` из `appsettings.json` (`localhost`-адреса, Kafka — `localhost:9092`):
+Для отладки из IDE `CHIngest` можно запустить и с хоста — он берёт `ClickHouse:ConnectionString` и `ConnectionStrings:CoreDb` из `appsettings.json` (`localhost`-адреса, Kafka — `localhost:9092`):
 
 ```bash
 dotnet run --project src/GeoPulse.CHIngest
-dotnet run --project src/GeoPulse.Aggregator
 ```
 
 `CHIngest` резолвит `npdWellBoreCode → well_id` по таблице `wells` в PostgreSQL, поэтому вне compose его запускают **после** того, как `Consumer` записал скважины.
@@ -155,7 +153,7 @@ dotnet run --project src/GeoPulse.Aggregator
 # PostgreSQL
 docker compose exec -T postgres psql -U geopulse -d geopulse_core -c "select count(*) from daily_production"
 # ClickHouse
-docker compose exec -T clickhouse clickhouse-client --user geopulse --password geopulse --query "select count() from gp.monthly_production"
+docker compose exec -T clickhouse clickhouse-client --user geopulse --password geopulse --query "select count() from gp.production_daily"
 ```
 
 ### Шаг 6. Загрузить координаты устьев (нужны для карты)
@@ -202,7 +200,9 @@ dotnet test tests/GeoPulse.Tests/GeoPulse.Tests.csproj -c Release
 | --- | --- | --- | --- |
 | `Unit` | `CoordinateTransformTests`, `EventClassificationTests`, `EventJsonSerializationTests`, `IngestionParsingTests`, `ReportDataLoaderTests`, `ReportMetricsTests`, `ReportWritersTests`, `TrajectoryParserTests` | 75 | нет |
 | `Contract` | `AnalyticsContractValidationTests`, `ReportsContractTests`, `TrajectoryContractTests`, `WellsContractTests` | 13 | нет (in-memory `TestServer` + `FakeRepositories`) |
-| `Integration` | `AggregatorServiceTests`, `AnalyticsContractDataTests`, `CHIngestIdempotencyTests`, `ConsumerIdempotencyTests`, `WellIdCacheTests` | 15 | да (`Testcontainers.PostgreSql` / `.Kafka` / `.ClickHouse`); помечены `[Trait("Category","Integration")]` |
+| `Integration` | `AnalyticsContractDataTests`, `CHIngestIdempotencyTests`, `ConsumerIdempotencyTests`, `WellIdCacheTests` | 15 [УТОЧНИТЬ] | да (`Testcontainers.PostgreSql` / `.Kafka` / `.ClickHouse`); помечены `[Trait("Category","Integration")]` |
+
+[УТОЧНИТЬ] — числа в таблице даны по прежнему набору тестов: по ADR-016 прогон фиксируется как 104 теста, распределение по группам нужно сверить повторным `dotnet test`.
 
 Отдельные группы:
 
@@ -248,7 +248,7 @@ docker compose exec -T postgres psql -U geopulse -d geopulse_core -c "select cou
 
 # ClickHouse
 docker compose exec -T clickhouse clickhouse-client --user geopulse --password geopulse --query "show tables from gp"
-docker compose exec -T clickhouse clickhouse-client --user geopulse --password geopulse --query "select count() from gp.monthly_production"
+docker compose exec -T clickhouse clickhouse-client --user geopulse --password geopulse --query "select count() from gp.production_daily"
 
 # Kafka: список топиков и содержимое DLQ
 docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list
@@ -265,8 +265,10 @@ docker compose down -v
 
 ## 7. Открытые вопросы
 
-1. **`docker compose up -d --build` собирает только `consumer` и `webapi`.** `chingest`, `aggregator` и `ingestion` в `docker-compose.yml` не описаны, поэтому «полный стек одной командой» локально недостижим — нужно три отдельных `dotnet run`. Добавлять ли их в локальный compose — [УТОЧНИТЬ].
+1. **`docker compose up -d --build` собирает `consumer`, `chingest` и `webapi`.** `ingestion` в `docker-compose.yml` не описан, поэтому импорт запускается с хоста отдельным `dotnet run --project src/GeoPulse.Ingestion.Service`. Оставлять ли его вне compose — [УТОЧНИТЬ].
 2. **Порты локального стека** (5432, 8123, 9000, 9092, 8080, 5146) публикуются наружу. Если на машине занят любой из них, `docker compose up` упадёт — какой порт менять безопаснее (зависит от того, что ещё запущено) — [УТОЧНИТЬ].
 3. **`dotnet ef database update`** опирается на design-time фабрику `CoreDbContextFactory` в `GeoPulse.Infrastructure`. Проверялась ли команда на чистой машине (и нужен ли `--startup-project` для конкретной версии CLI) — [УТОЧНИТЬ].
 4. **Проверка фронтенда локально на Windows** требует запущенного Docker (образ `node:20-alpine`); вариант «Node на хосте» в документации не описан в скриптах — [УТОЧНИТЬ], нужен ли.
 5. **Интеграционные тесты (8 шт.)** в этом окружении не прогонялись: они поднимают Postgres/Kafka/ClickHouse через Testcontainers и требуют времени на скачивание образов. Команда выше соответствует `pipeline.yml` — [УТОЧНИТЬ] результаты на чистой машине.
+
+Последняя сверка с кодом: 2026-11-10

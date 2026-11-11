@@ -6,7 +6,6 @@ global using ClickHouse.Client.ADO;
 global using ClosedXML.Excel;
 global using Confluent.Kafka;
 global using Confluent.Kafka.Admin;
-global using GeoPulse.Aggregator;
 global using GeoPulse.CHIngest;
 global using GeoPulse.ClickHouse;
 global using GeoPulse.Consumer;

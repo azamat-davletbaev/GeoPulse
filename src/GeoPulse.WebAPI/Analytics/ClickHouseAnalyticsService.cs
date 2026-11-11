@@ -1,18 +1,46 @@
 using System.Data.Common;
 using System.Globalization;
 using ClickHouse.Client.ADO;
+using ClickHouse.Client.Utility;
 using GeoPulse.ClickHouse;
 using GeoPulse.Core.Models;
 
 namespace GeoPulse.WebAPI.Analytics
 {
-    /// <summary>Аналитика из ClickHouse (база gp, таблица monthly_production).</summary>
+    /// <summary>
+    /// Аналитика из ClickHouse (база gp). Помесячные агрегаты считаются на лету из сырых
+    /// суточных строк gp.production_daily — предвычисленной таблицы агрегатов больше нет (ADR-016).
+    /// </summary>
     public sealed class ClickHouseAnalyticsService : IMonthlyProductionReader
     {
-        /// <summary>Колонки помесячного агрегата — один список для всех запросов.</summary>
-        private const string MonthlyColumns =
-            "well_id, year, month, oil_vol_sum, gas_vol_sum, water_vol_sum, " +
-            "water_injection_vol_sum, on_stream_hrs_sum, days_count";
+        /// <summary>
+        /// Агрегация суточных строк в помесячные. FINAL обязателен: дедупликацию повторов топика
+        /// выполняет движок ReplacingMergeTree по (npd_well_bore_code, date). Порядок и имена колонок
+        /// совпадают с прежней выборкой из gp.monthly_production, поэтому маппинг в DTO не изменился.
+        /// </summary>
+        private const string MonthlyAggregateSql =
+            "SELECT well_id, toYear(date) AS year, toMonth(date) AS month, " +
+            "sum(oil_vol) AS oil_vol_sum, sum(gas_vol) AS gas_vol_sum, sum(water_vol) AS water_vol_sum, " +
+            "sum(water_injection_vol) AS water_injection_vol_sum, sum(on_stream_hrs) AS on_stream_hrs_sum, " +
+            "count() AS days_count " +
+            "FROM " + ClickHouseSchema.ProductionDailyTable + " FINAL ";
+
+        /// <summary>Все помесячные агрегаты по всем скважинам.</summary>
+        private const string AllMonthlySql =
+            MonthlyAggregateSql + "GROUP BY well_id, year, month ORDER BY year, month, well_id";
+
+        /// <summary>Помесячные агрегаты одной скважины; well_id передаётся параметром запроса.</summary>
+        private const string MonthlyByWellSql =
+            MonthlyAggregateSql + "WHERE well_id = {wellId:UInt32} GROUP BY well_id, year, month ORDER BY year, month";
+
+        /// <summary>
+        /// Итоги за всё время. Суммы те же, что давала сумма по месяцам, а count() суточных строк
+        /// равен прежнему sum(days_count) по агрегатам.
+        /// </summary>
+        private const string SummarySql =
+            "SELECT sum(oil_vol), sum(gas_vol), sum(water_vol), sum(water_injection_vol), " +
+            "sum(on_stream_hrs), count() " +
+            "FROM " + ClickHouseSchema.ProductionDailyTable + " FINAL";
 
         private readonly string _connectionString;
 
@@ -27,13 +55,11 @@ namespace GeoPulse.WebAPI.Analytics
         public Task<IReadOnlyList<MonthlyProduction>> GetMonthlyByWellAsync(
             int wellId,
             CancellationToken cancellationToken = default) =>
-            QueryMonthlyAsync(MonthlyByWellSql(wellId), cancellationToken);
+            QueryMonthlyAsync(MonthlyByWellSql, wellId, cancellationToken);
 
         /// <inheritdoc />
         public Task<IReadOnlyList<MonthlyProduction>> GetAllMonthlyAsync(CancellationToken cancellationToken = default) =>
-            QueryMonthlyAsync(
-                $"SELECT {MonthlyColumns} FROM {ClickHouseSchema.MonthlyProductionTable} ORDER BY year, month, well_id",
-                cancellationToken);
+            QueryMonthlyAsync(AllMonthlySql, wellId: null, cancellationToken);
 
         /// <inheritdoc />
         public async Task<ProductionSummary> GetSummaryAsync(CancellationToken cancellationToken = default)
@@ -41,10 +67,7 @@ namespace GeoPulse.WebAPI.Analytics
             await using var connection = new ClickHouseConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
             await using var command = connection.CreateCommand();
-            command.CommandText =
-                "SELECT sum(oil_vol_sum), sum(gas_vol_sum), sum(water_vol_sum), " +
-                "sum(water_injection_vol_sum), sum(on_stream_hrs_sum), sum(days_count) " +
-                $"FROM {ClickHouseSchema.MonthlyProductionTable}";
+            command.CommandText = SummarySql;
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
@@ -65,12 +88,20 @@ namespace GeoPulse.WebAPI.Analytics
 
         private async Task<IReadOnlyList<MonthlyProduction>> QueryMonthlyAsync(
             string sql,
+            int? wellId,
             CancellationToken cancellationToken)
         {
             await using var connection = new ClickHouseConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
+
+            if (wellId.HasValue)
+            {
+                // Внешнее значение передаётся параметром запроса {wellId:UInt32}, а не подстановкой
+                // в текст SQL: ClickHouse.Client 7.14 поддерживает AddParameter для placeholders.
+                command.AddParameter("wellId", (uint)wellId.Value);
+            }
 
             var result = new List<MonthlyProduction>();
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -92,15 +123,6 @@ namespace GeoPulse.WebAPI.Analytics
 
             return result;
         }
-
-        /// <summary>
-        /// SQL выборки агрегатов одной скважины. well_id — целое из нашей БД (не пользовательский
-        /// ввод), поэтому подставляется литералом: драйвер ClickHouse.Client 7.14 не даёт
-        /// именованных параметров в используемом API, а экранирование для int не требуется.
-        /// </summary>
-        private static string MonthlyByWellSql(int wellId) =>
-            $"SELECT {MonthlyColumns} FROM {ClickHouseSchema.MonthlyProductionTable} " +
-            $"WHERE well_id = {wellId.ToString(CultureInfo.InvariantCulture)} ORDER BY year, month";
 
         /// <summary>
         /// Читает числовое значение независимо от точного типа ClickHouse (UInt8/UInt16/UInt32/UInt64/Float64):

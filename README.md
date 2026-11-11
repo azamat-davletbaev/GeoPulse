@@ -2,15 +2,15 @@
 
 [![CI/CD](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/azamat-davletbaev/GeoPulse/actions/workflows/pipeline.yml)
 
-GeoPulse — демонстрационная веб-система мониторинга добычи нефти на открытых данных месторождения **Volve** (норвежский шельф, Северное море). Данные импортируются событийным пайплайном через Apache Kafka, точечные показатели хранятся в PostgreSQL, сырые события и помесячные агрегаты — в ClickHouse. Поверх этого работает REST API и статический веб-клиент: интерактивная карта скважин с траекториями стволов, графики добычи по скважине и месторождению, отчёты в Excel и CSV. Весь стек поднимается одной командой `docker compose up -d --build`, деплой на сервер — через GitHub Actions и Caddy с автоматическим TLS.
+GeoPulse — демонстрационная веб-система мониторинга добычи нефти на открытых данных месторождения **Volve** (норвежский шельф, Северное море). Данные импортируются событийным пайплайном через Apache Kafka, точечные показатели хранятся в PostgreSQL, сырые суточные события — в ClickHouse, а помесячная аналитика агрегируется на лету. Поверх этого работает REST API и статический веб-клиент: интерактивная карта скважин с траекториями стволов, графики добычи по скважине и месторождению, отчёты в Excel и CSV. Весь стек поднимается одной командой `docker compose up -d --build`, деплой на сервер — через GitHub Actions и Caddy с автоматическим TLS.
 
 ![screenshot](docs/img/screenshot.png)
 
 ## Стек
 
-- **.NET 10** — ASP.NET Core Web API (`GeoPulse.WebAPI`) и четыре консольных сервиса
+- **.NET 10** — ASP.NET Core Web API (`GeoPulse.WebAPI`) и три консольных сервиса (`Consumer`, `CHIngest`, `Ingestion.Service`)
 - **PostgreSQL 17** — справочник скважин, суточная добыча, координаты устьев, траектории, забой
-- **ClickHouse 24.8** — сырые суточные события (`ReplacingMergeTree`) и помесячные агрегаты (`MergeTree`)
+- **ClickHouse 24.8** — сырые суточные события (`ReplacingMergeTree`); помесячная аналитика агрегируется на лету
 - **Apache Kafka 4.0** (KRaft, один узел) — шина между импортом и двумя потребителями, DLQ для ошибок
 - **EF Core 10** + `Npgsql` — модель PostgreSQL и миграции
 - **ClickHouse.Client**, **Confluent.Kafka**, **ExcelDataReader**, **ClosedXML**, **Swashbuckle**
@@ -34,8 +34,8 @@ Excel + WITSML-текст ──▶ Ingestion.Service ──▶ Kafka "productio
                                                   ├─▶ CHIngest  ──▶ ClickHouse gp (сырые события)
                                                   └─▶ "production-daily-dlq" (ошибочные события)
 
-ClickHouse gp.production_daily ──▶ Aggregator (таймер 60 с) ──▶ gp.monthly_production
-PostgreSQL public.* + ClickHouse gp.monthly_production ──▶ WebAPI ──▶ web/ (Leaflet + ECharts) ──▶ Caddy
+ClickHouse gp.production_daily (FINAL) ──▶ WebAPI (помесячная агрегация на лету)
+PostgreSQL public.* ──▶ WebAPI ──▶ web/ (Leaflet + ECharts) ──▶ Caddy
 ```
 
 Подробно — сервисы, обоснование двух хранилищ, формат сообщений и партиционирование: [docs/architecture.md](docs/architecture.md).
@@ -72,3 +72,5 @@ dotnet run --project src/GeoPulse.Ingestion.Service   # первичный им�
 
 1. **Ссылка на демо.** Публичный адрес развёрнутого стенда в README не указан (домен задаётся в `.env` как `DOMAIN`) — [УТОЧНИТЬ].
 2. **Страница «Прогноз».** `web/forecast.html` уже в навигации, но `/api/Forecast/*` ещё не реализованы: страница показывает блок «Прогноз недоступен». Эндпоинты появятся в задаче по ML-прогнозу.
+
+Последняя сверка с кодом: 2026-11-10

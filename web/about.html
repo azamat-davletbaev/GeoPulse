@@ -69,21 +69,26 @@
     <section class="card">
       <h2>Архитектура</h2>
       <pre class="diagram">Excel + WITSML (данные Volve)
-        │
-        ▼
-Ingestion.Service ──► Kafka ──┬─► Consumer ──► PostgreSQL (точечные данные)
-      парсер/издатель          │                 wells, daily_production,
-                               │                 well_trajectories
-                               ├─► CHIngest ──► ClickHouse gp (сырые события)
-                               └─► DLQ (некорректные события)
+               │
+               ▼
+      Ingestion.Service (парсер/издатель)
+               │
+               ▼
+        Kafka (production-daily)
+               │
+               ├──► Consumer ──► PostgreSQL 17 (wells, daily_production,
+               │    (идемпотентно) well_trajectories)
+               │
+               └──► CHIngest ──► ClickHouse 24.8 gp.production_daily
+                    (ошибки →     [ReplacingMergeTree]
+                     DLQ)
 
-ClickHouse gp.production_daily ──► Aggregator (таймер 60 с) ──► gp.monthly_production
-                                                                        │
-                                                                        ▼
-                                              GeoPulse.WebAPI (REST + статика web/)
-                                                                        │
-                                                                        ▼
-                                                          Фронт web/ (Leaflet + ECharts)</pre>
+ClickHouse gp.production_daily ──► GeoPulse.WebAPI (REST + статика web/)
+                                   агрегация помесячной добычи на лету (FINAL)
+                                             │
+                                             ▼
+                                   Фронт web/ (Leaflet + ECharts)
+</pre>
     </section>
 
     <section class="card">
