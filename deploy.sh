@@ -331,6 +331,13 @@ compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhos
 log "8/10 docker compose up -d --remove-orphans"
 compose up -d --remove-orphans
 
+log "8b/10 Перезагрузка конфига Caddy (bind-mount не триггерит пересоздание)"
+if [ "$(docker inspect -f '{{.State.Running}}' geopulse-caddy 2>/dev/null)" = "true" ]; then
+  compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+else
+  warn "контейнер caddy не запущен — reload пропущен"
+fi
+
 # ----------------------------------------------------------------------------
 # 9. Health-check: ретраи до 60 секунд (30 × 2 с), затем проверка статусов.
 # ----------------------------------------------------------------------------
@@ -372,20 +379,6 @@ for name in "${CORE_CONTAINERS[@]}"; do
 done
 
 # Финальная строгая инспекция (гарантирует, что на выходе нет никаких starting)
-BAD=0
-for name in "${CORE_CONTAINERS[@]}"; do
-  state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name" 2>/dev/null || echo missing)"
-  case "$state" in
-    healthy|running) : ;;
-    *) BAD=1; warn "сервис ${name}: ${state}" ;;
-  esac
-done
-if [ "$BAD" -ne 0 ]; then
-  compose ps || true
-  die "Не все сервисы в состоянии Up/healthy — деплой считается неуспешным."
-fi
-
-# Все контейнеры должны быть запущены (healthy/running).
 BAD=0
 for name in "${CORE_CONTAINERS[@]}"; do
   state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name" 2>/dev/null || echo missing)"

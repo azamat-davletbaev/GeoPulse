@@ -25,6 +25,12 @@
 		format json # Самый информативный структурированный формат логов Caddy
 	}
 
+	# /metrics (экспортёр Prometheus в WebAPI) наружу не отдаём: scrape идёт
+	# напрямую из compose-сети (prometheus -> webapi:5146/metrics, профиль
+	# "observability"). Публичный /health не затрагивается.
+	@metrics path /metrics
+	respond @metrics 404
+
 	reverse_proxy webapi:5146 {
 		lb_try_duration 15s
 		lb_try_interval 250ms
@@ -46,6 +52,10 @@ http://{$FALLBACK_IP} {
 		}
 		format json
 	}
+
+	# То же ограничение для резервного входа по IP: /metrics остаётся внутренним.
+	@metrics path /metrics
+	respond @metrics 404
 
 	reverse_proxy webapi:5146 {
 		lb_try_duration 15s
