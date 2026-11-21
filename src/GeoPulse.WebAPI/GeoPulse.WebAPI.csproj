@@ -21,12 +21,30 @@
     <!-- ClosedXML: генерация настоящих .xlsx без Excel interop, кроссплатформенно, без нативных зависимостей. -->
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.3.1" />
+    <!-- Экспортёр метрик Prometheus: endpoint /metrics в exposition-формате.
+         Наружу путь закрыт в Caddyfile — scrape выполняет Prometheus из compose-сети. -->
+    <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\GeoPulse.Core\GeoPulse.Core.csproj" />
     <ProjectReference Include="..\GeoPulse.Infrastructure\GeoPulse.Infrastructure.csproj" />
     <ProjectReference Include="..\GeoPulse.ClickHouse\GeoPulse.ClickHouse.csproj" />
+  </ItemGroup>
+
+  <!-- OpenTelemetry-трейсинг — ТОЛЬКО для локальной разработки.
+       Условие по Configuration: прод-образ собирается командой
+       `dotnet publish -c Release` (см. src/GeoPulse.WebAPI/Dockerfile), поэтому в
+       Release-сборку эти пакеты не попадают вовсе (ни в deps.json, ни в образ).
+       Код настройки в Program.cs дополнительно обёрнут в `#if DEBUG` и включается
+       только при ASPNETCORE_ENVIRONMENT=Development (launchSettings.json). -->
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.21.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.21.0" />
+    <!-- EF Core-инструментация стабильных версий не имеет: у проекта OTel для неё
+         публикуются только beta-сборки (это официальная политика). -->
+    <PackageReference Include="OpenTelemetry.Instrumentation.EntityFrameworkCore" Version="1.21.0-beta.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.21.0" />
   </ItemGroup>
 
   <ItemGroup>
