@@ -186,6 +186,90 @@ services:
       retries: 5
       start_period: 20s
 
+  # --- НАБЛЮДАЕМОСТЬ (профиль "observability", по умолчанию выключен) ---
+  # `docker compose up -d` эти сервисы не поднимает. Запуск:
+  #   docker compose --profile observability up -d
+  # Конфиги общие с продом и лежат в observability/ (не правятся из локального
+  # стека). Наружу опубликованы только loopback-порты Grafana и node-exporter.
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: geopulse-prometheus
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      # Ретеншн 7 дней и путь к TSDB — как в проде.
+      - "--storage.tsdb.retention.time=7d"
+      - "--storage.tsdb.path=/prometheus"
+      # Позволяет применить правку prometheus.yml без пересоздания контейнера.
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata_local:/prometheus
+    # Prometheus скрейпит node-exporter по host.docker.internal:9100 (см.
+    # prometheus.yml). На Docker Desktop это имя резолвится и без записи, но
+    # оставляем её для паритета с прод-файлом.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 256m
+    healthcheck:
+      # В образе prom/prometheus есть только busybox (curl нет) — проверяем wget'ом.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: geopulse-grafana
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      # Локальный стенд: фиксированные admin/admin допустимы, compose здесь .env
+      # не читает.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      # Provisioning datasource'ов (Prometheus) — файл в git, UI не правим.
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data_local:/var/lib/grafana
+    ports:
+      # Только loopback: http://localhost:3000 (admin/admin).
+      - "127.0.0.1:3000:3000"
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: geopulse-node-exporter
+    profiles: ["observability"]
+    restart: unless-stopped
+    # Лимит как в проде (docker-compose.prod.yml): экспортёр почти не потребляет память.
+    mem_limit: 64m
+    # Отличие от прода: там network_mode: host (метрики хоста), а на Docker Desktop
+    # это метрики VM — поэтому здесь обычный контейнер с портом на loopback.
+    ports:
+      - "127.0.0.1:9100:9100"
+    # Healthcheck НЕ добавляем: в образе нет ни sh, ни wget/curl, только бинарь
+    # node_exporter, поэтому проверка живучести — метрика up{job="node-exporter"}.
+
 volumes:
   geopulse-pgdata:
   geopulse-chdata:
+  # Данные Prometheus (TSDB, ретеншн 7 дней) и Grafana (пользователи, дашборды).
+  # Отдельные от прод-томов (promdata/grafana_data): локальный стенд не делит
+  # историю метрик и настройки с продом.
+  promdata_local:
+  grafana_data_local:

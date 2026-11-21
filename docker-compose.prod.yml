@@ -4,6 +4,15 @@
 # Ingestion — одноразовый запуск (docker compose run --rm ingestion), в постоянный
 # состав не входит (профиль "init").
 #
+# Метрики (prometheus, grafana, node-exporter) — профиль "observability":
+# обычный `docker compose up -d` их НЕ поднимает, и deploy.sh про них не знает
+# (он проверяет фиксированный список CORE_CONTAINERS из 7 сервисов).
+# Запуск/остановка по требованию:
+#   docker compose -f docker-compose.prod.yml --profile observability up -d
+#   docker compose -f docker-compose.prod.yml stop prometheus grafana node-exporter
+#   docker compose -f docker-compose.prod.yml rm -f prometheus grafana node-exporter
+# (`down` здесь не используем: он останавливает весь проект, включая основной стек).
+#
 # Переменные окружения берутся из файла .env (см. .env.example). Секреты — в .env,
 # в репозиторий не коммитятся.
 # Тег образов приложения — DOCKER_TAG (latest или короткий SHA коммита);
@@ -74,6 +83,12 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - chdata:/var/lib/clickhouse
+      # Внутренний лимит памяти ClickHouse ≈ 600 МБ (см.
+      # observability/clickhouse/max_server_memory_usage.xml). Отдельный файл в
+      # config.d читается поверх config.xml при старте; том chdata не меняется,
+      # поэтому `docker compose up -d clickhouse` (пересоздание контейнера) не
+      # приводит к потере данных.
+      - ./observability/clickhouse/max_server_memory_usage.xml:/etc/clickhouse-server/config.d/max_server_memory_usage.xml:ro
     ulimits:
       nofile:
         soft: 262144
@@ -97,6 +112,8 @@ services:
       Kafka__BootstrapServers: kafka:29092
       Kafka__Topic: production-daily
       Kafka__DlqTopic: production-daily-dlq
+    # 256m — общий бюджет .NET-сервисов: рабочий набор маленький, лимит держим
+    # как запас под GC при пиковой нагрузке (сервер 2 ГБ RAM).
     mem_limit: 256m
     depends_on:
       kafka:
@@ -114,6 +131,8 @@ services:
       Kafka__BootstrapServers: kafka:29092
       Kafka__Topic: production-daily
       Kafka__DlqTopic: production-daily-dlq
+    # Тот же бюджет 256m, что у consumer: пакетная запись в ClickHouse даёт
+    # всплески аллокаций — лимит оставляет запас под GC.
     mem_limit: 256m
     depends_on:
       kafka:
@@ -132,6 +151,8 @@ services:
       ASPNETCORE_URLS: http://+:5146
       ConnectionStrings__CoreDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-geopulse_core};Username=${POSTGRES_USER:-geopulse};Password=${POSTGRES_PASSWORD}
       ConnectionStrings__ClickHouse: Host=clickhouse;Port=8123;Database=${CLICKHOUSE_DB:-gp};Username=${CLICKHOUSE_USER:-geopulse};Password=${CLICKHOUSE_PASSWORD}
+    # 256m, как у consumer/chingest: запас под GC и JIT в пике — отчёты
+    # (xlsx/csv) и агрегаты по добыче собираются в памяти.
     mem_limit: 256m
     depends_on:
       postgres:
@@ -167,6 +188,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    # 64m: прокси держит в памяти только TLS-сертификаты, буферы и файл журнала.
+    # Отдельный потолок не даёт Caddy вытеснить память у сервисов приложения.
+    mem_limit: 64m
     depends_on:
       - webapi
 
@@ -183,8 +207,114 @@ services:
       kafka:
         condition: service_healthy
 
+  # --- НАБЛЮДАЕМОСТЬ (профиль "observability", по умолчанию выключен) ---
+  # Все три сервиса помечены profiles: ["observability"], поэтому:
+  #   * `docker compose -f docker-compose.prod.yml up -d` их не поднимает;
+  #   * deploy.sh их не тянет и не проверяет (CORE_CONTAINERS — 7 сервисов);
+  #   * наружу ничего не публикуется, кроме loopback-порта Grafana (SSH-туннель).
+  # Образы закреплены по тегам (не latest — иначе обновление могло бы сломать
+  # совместимость конфигов); у каждого контейнера обязательный mem_limit
+  # (сервер 2 ГБ RAM + 2 ГБ swap).
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: geopulse-prometheus
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      # Ретеншн 7 дней: данных больше не нужно, диск 32 ГБ общий с данными стека.
+      - "--storage.tsdb.retention.time=7d"
+      - "--storage.tsdb.path=/prometheus"
+      # Позволяет применить правку prometheus.yml без пересоздания контейнера:
+      # curl -X POST http://127.0.0.1:9090/-/reload (изнутри контейнера).
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    # node-exporter живёт в host-сети (у него нет имени в compose-сети), поэтому
+    # Prometheus ходит к нему по host.docker.internal -> host-gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 256m
+    healthcheck:
+      # В образе prom/prometheus есть только busybox (curl нет) — проверяем wget'ом.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    # Порт наружу не публикуем: Prometheus нужен только Grafana (внутри сети).
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: geopulse-grafana
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # Пароль берётся из .env. Значение по умолчанию "admin" выбрано осознанно:
+      # `${VAR:?}` сделал бы невалидным compose-файл и без профиля (интерполяция
+      # выполняется всегда), то есть сломал бы deploy.sh на .env без этой строки.
+      # Риск низкий: порт Grafana привязан к 127.0.0.1 (см. ports ниже), снаружи
+      # доступа нет. Задайте надёжный пароль в .env.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Демо-стенд: самостоятельная регистрация пользователей запрещена.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Не шлём телеметрию и не проверяем обновления (лишний трафик/CPU на 1 vCPU).
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      # Provisioning datasource'ов (Prometheus) — файл в git, UI не правим.
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      # Наружу НЕ публикуем: порт привязан к loopback сервера, поэтому снаружи
+      # недоступен даже при открытом UFW. Доступ — через SSH-туннель:
+      #   ssh -L 3000:127.0.0.1:3000 deploy@<SERVER_IP>
+      - "127.0.0.1:3000:3000"
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: geopulse-node-exporter
+    profiles: ["observability"]
+    restart: unless-stopped
+    # Метрики нужны ХОСТА, а не контейнера: host network + host pid + маунты
+    # /proc, /sys и корня ФС только на чтение.
+    network_mode: host
+    pid: host
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host/rootfs"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/rootfs:ro
+    # Скромный лимит: экспортёр сам по себе почти не потребляет память.
+    mem_limit: 64m
+    # Healthcheck невозможен: образ собран «с нуля» (в нём только бинарь
+    # node_exporter, нет ни sh, ни wget/curl), поэтому статус контейнера —
+    # running, а живучесть проверяется метрикой up{job="node-exporter"} в
+    # Prometheus (или curl с хоста: curl -fsS http://127.0.0.1:9100/metrics).
+    # Порт 9100 слушает хост, но наружу закрыт: UFW пропускает только 22/80/443.
+
 volumes:
   pgdata:
   chdata:
   caddy_data:
   caddy_config:
+  # Данные Prometheus (TSDB, ретеншн 7 дней) и Grafana (пользователи, дашборды).
+  # Отдельные тома — чтобы `down` профиля не терял историю метрик и настройки.
+  promdata:
+  grafana_data:
+

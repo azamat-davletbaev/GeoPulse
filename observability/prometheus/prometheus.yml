@@ -1,0 +1,33 @@
+# Конфигурация Prometheus для GeoPulse (профиль compose "observability").
+# Монтируется в контейнер как /etc/prometheus/prometheus.yml (read-only), см.
+# docker-compose.prod.yml. Ретеншн (7 дней) задаётся флагом
+# --storage.tsdb.retention.time в команде сервиса, а не здесь.
+
+global:
+  # 15 с — компромисс для сервера с 2 ГБ RAM: достаточно для демо-стенда и
+  # заметно дешевле, чем 5–10 с (меньше точек в TSDB и меньше CPU).
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # 1. Сам Prometheus — чтобы видеть up/health и стоимость собственного scrape.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 2. Метрики WebAPI (пакет prometheus-net.AspNetCore, endpoint /metrics).
+  #    Адрес внутренний (compose-сеть): наружу /metrics закрыт в Caddyfile.
+  - job_name: geopulse-webapi
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["webapi:5146"]
+
+  # 3. Метрики ХОСТА от node-exporter.
+  #    node-exporter работает в host-сети (нужны /proc, /sys, / хоста), поэтому
+  #    у него нет имени в compose-сети. Prometheus обращается к нему через
+  #    host.docker.internal, который резолвится в host-gateway (см. extra_hosts
+  #    у сервиса prometheus в docker-compose.prod.yml).
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["host.docker.internal:9100"]

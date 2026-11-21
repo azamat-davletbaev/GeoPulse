@@ -129,6 +129,10 @@ scp sql/seed_well_locations.sql USER@SERVER_IP:/opt/geopulse/
 
 > `.env` создаётся из `.env.example` и содержит секреты — в репозиторий он не коммитится.
 
+> Каталог `observability/` нужен только для профиля наблюдаемости (раздел 7).
+> Если он используется, скопируйте его целиком:
+> `scp -r observability USER@SERVER_IP:/opt/geopulse/`.
+
 На сервере заполните `.env` (домен DuckDNS, пароли):
 
 ```bash
@@ -138,6 +142,8 @@ nano .env
 
 Минимально нужны: `DOMAIN=geopulse-demo.duckdns.org`, `POSTGRES_PASSWORD`,
 `CLICKHOUSE_PASSWORD`. Остальное имеет значения по умолчанию.
+Для профиля наблюдаемости задайте также `GRAFANA_ADMIN_PASSWORD` (без него
+действует `admin` — допустимо только потому, что Grafana слушает loopback).
 
 ---
 
@@ -277,8 +283,110 @@ docker compose -f docker-compose.prod.yml up -d
 
 Лимиты в `docker-compose.prod.yml` — это верхние границы (потолки), а не резервирование:
 Postgres `256m`, Kafka heap `-Xmx384m` (контейнер `768m`), ClickHouse `768m`,
-каждый .NET-сервис `256m` (`consumer`, `chingest`, `webapi`). При нехватке памяти OOM-killer убьёт контейнер,
+каждый .NET-сервис `256m` (`consumer`, `chingest`, `webapi`), Caddy `64m`. При нехватке памяти OOM-killer убьёт контейнер,
 `restart: unless-stopped` его поднимет. Если OOM повторяется — уменьшите лимиты
 ClickHouse/Kafka или число одновременных .NET-сервисов в пике.
+Полная таблица по всем 10 сервисам — раздел 7.1.
 
-Последняя сверка с кодом: 2026-11-10
+Дополнительно ClickHouse ограничен **изнутри** ≈ 600 МиБ
+(`max_server_memory_usage` в `observability/clickhouse/max_server_memory_usage.xml`):
+при превышении сервер отказывает тяжёлым запросом (`Code: 241`), а не падает от OOM-killer.
+
+Профиль наблюдаемости (раздел 7) добавляет ещё `256m` (Prometheus), `192m` (Grafana)
+и `64m` (node-exporter) — итого до `512 МБ` сверх основного стека, поэтому на 2 ГБ
+его включают по требованию, а не постоянно.
+
+---
+
+## 7. Мониторинг (профиль `observability`)
+
+Prometheus + Grafana + node-exporter объявлены в `docker-compose.prod.yml` с
+profiles: `observability`, поэтому **обычный `docker compose up -d` их не
+поднимает**, а `deploy.sh` про них не знает (его `CORE_CONTAINERS` — ровно 7
+сервисов основного состава).
+
+```bash
+cd /opt/geopulse
+# запуск мониторинга (основной стек уже работает)
+docker compose -f docker-compose.prod.yml --profile observability up -d
+docker compose -f docker-compose.prod.yml --profile observability ps
+
+# остановить и убрать ТОЛЬКО контейнеры профиля (тома promdata/grafana_data остаются)
+docker compose -f docker-compose.prod.yml stop prometheus grafana node-exporter
+docker compose -f docker-compose.prod.yml rm -f prometheus grafana node-exporter
+```
+
+> `docker compose ... down` для остановки мониторинга не используйте: `down`
+> действует на весь проект и погасил бы основной стек. Останавливайте сервисы
+> профиля по именам, как показано выше.
+
+Что опрашивается (`observability/prometheus/prometheus.yml`, интервал 15 с):
+`webapi:5146/metrics`, `host.docker.internal:9100` (node-exporter, host-сеть) и сам
+Prometheus. Ретеншн — 7 дней (`--storage.tsdb.retention.time=7d`).
+
+Доступ к Grafana — только через SSH-туннель, порт опубликован на loopback сервера:
+
+```bash
+# на своей машине:
+ssh -L 3000:127.0.0.1:3000 USER@SERVER_IP
+# затем открыть http://127.0.0.1:3000 (логин admin, пароль = GRAFANA_ADMIN_PASSWORD из .env)
+```
+
+Datasource `Prometheus` создаётся автоматически из
+`observability/grafana/provisioning/datasources/prometheus.yml`.
+Готовый дашборд по хосту: Dashboards → Import → ID `1860` (Node Exporter Full),
+datasource — Prometheus.
+
+`/metrics` наружу не отдаётся: в `Caddyfile` для обоих сайтов добавлен
+`respond @metrics 404`, публичный `/health` не изменён.
+
+Проверка:
+
+```bash
+# метрики WebAPI изнутри сети (без выхода наружу)
+docker compose -f docker-compose.prod.yml exec -T prometheus wget -qO- http://webapi:5146/metrics | head -5
+# сам экспортёр и targets
+docker compose -f docker-compose.prod.yml exec -T prometheus wget -qO- http://127.0.0.1:9090/api/v1/targets | head -c 400
+# host-метрики node-exporter (порт слушает только хост)
+curl -fsS http://127.0.0.1:9100/metrics | head -5
+# свободная память при включённом профиле
+free -m
+```
+
+Нормой на 2 ГБ RAM считается: `used` до ~1.5–1.6 ГБ, `available` ≥ 350–450 МБ,
+`swap used` — 0 (swap задействуется только в пике; устойчивый рост swap означает,
+что лимиты надо уменьшать).
+
+### 7.1. Лимиты сервисов приложения (полный бюджет памяти стенда)
+
+Обязательный `mem_limit` есть у **всех** контейнеров (сервер 2 ГБ RAM + 2 ГБ swap).
+Значения — потолки cgroup, а не резервирование: фактическое потребление ниже.
+
+| # | Сервис | Контейнер | `mem_limit` | Профиль | Почему столько |
+|---|---|---|---|---|---|
+| 1 | `postgres` | `geopulse-postgres` | `256m` | основной | БД небольшая: ~15 тыс. строк добычи + справочники |
+| 2 | `kafka` | `geopulse-kafka` | `768m` | основной | heap JVM `-Xmx384m` + оверхед брокера/контроллера |
+| 3 | `clickhouse` | `geopulse-clickhouse` | `768m` | основной | изнутри ограничен ≈600 МиБ (`max_server_memory_usage`) |
+| 4 | `consumer` | `geopulse-consumer` | `256m` | основной | .NET: запас под GC при разборе потока Kafka |
+| 5 | `chingest` | `geopulse-chingest` | `256m` | основной | .NET: всплески аллокаций при пакетной записи в ClickHouse |
+| 6 | `webapi` | `geopulse-webapi` | `256m` | основной | .NET: GC/JIT под нагрузкой, отчёты xlsx/csv собираются в памяти |
+| 7 | `caddy` | `geopulse-caddy` | `64m` | основной | только TLS-сертификаты, буферы прокси и журнал запросов |
+| 8 | `prometheus` | `geopulse-prometheus` | `256m` | `observability` | TSDB на 7 дней ретеншна, ~10 таргетов |
+| 9 | `grafana` | `geopulse-grafana` | `192m` | `observability` | UI + provisioning, дашборды без тяжёлых плагинов |
+| 10 | `node-exporter` | `geopulse-node-exporter` | `64m` | `observability` | экспортёр почти не потребляет память |
+
+**Итог:** основной стек — `2624m` (~2.56 ГБ) лимитов; с профилем
+`observability` — `3136m` (~3.06 ГБ). Сумма потолков выше объёма RAM намеренно:
+контейнеры не выбирают лимит целиком, а сумма даёт запас на пики без OOM.
+
+Проверка лимитов на сервере:
+
+```bash
+cd /opt/geopulse
+# факт потребления по контейнерам (MemUsage / % от лимита)
+docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}'
+# потолки из отрендеренного конфига (значения в байтах)
+docker compose -f docker-compose.prod.yml config | grep -B1 'mem_limit'
+```
+
+Последняя сверка с кодом: 2026-11-12

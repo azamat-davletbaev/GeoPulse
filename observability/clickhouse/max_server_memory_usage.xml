@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!--
+  Внутренний лимит памяти ClickHouse ≈ 600 МиБ.
+  Монтируется в контейнер как /etc/clickhouse-server/config.d/max_server_memory_usage.xml
+  (read-only), см. docker-compose.prod.yml. Том chdata с данными не затрагивается:
+  файл конфигурации читается при старте, данные лежат отдельно.
+
+  Зачем два лимита:
+    * mem_limit: 768m в docker-compose.prod.yml — потолок cgroup; при его
+      превышении срабатывает OOM-killer и контейнер умирает целиком;
+    * max_server_memory_usage (этот файл) — потолок самого процесса ClickHouse:
+      при превышении сервер начинает отказывать в тяжёлых запросах
+      (Code: 241, MEMORY_LIMIT_EXCEEDED) вместо убийства процесса.
+  600 МиБ < 768 МиБ cgroup намеренно: остаётся ~168 МиБ на page cache,
+  mmap-аллокации, jemalloc-арены и прочий оверхед.
+
+  Значение задано числом в байтах (600 МиБ = 629 145 600), чтобы не зависеть от
+  автоопределения RAM/cgroup: у ClickHouse доля по умолчанию
+  (max_server_memory_usage_to_ram_ratio = 0.9) от cgroup-лимита 768m дала бы
+  ~691 МиБ, то есть слишком близко к жёсткому потолку.
+
+  ClickHouse разбирает все файлы из config.d и мержит их поверх config.xml,
+  поэтому этот файл дополняет, а не заменяет базовый конфиг.
+-->
+<clickhouse>
+    <max_server_memory_usage>629145600</max_server_memory_usage>
+</clickhouse>

@@ -1,0 +1,20 @@
+# Provisioning datasource'ов Grafana: каталог монтируется в
+# /etc/grafana/provisioning (read-only), см. docker-compose.prod.yml.
+# Благодаря этому после старта Grafana datasource "Prometheus" уже существует —
+# руками в UI ничего добавлять не нужно, и это воспроизводимо при пересоздании.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Фиксированный uid: на него можно ссылаться из дашбордов/запросов, не завися
+    # от автогенерируемого идентификатора.
+    uid: prometheus
+    type: prometheus
+    access: proxy          # запросы идёт сам сервер Grafana, а не браузер клиента
+    url: http://prometheus:9090   # имя сервиса в compose-сети
+    isDefault: true
+    editable: false        # правки только через этот файл (иначе разъедется с git)
+    jsonData:
+      # Должно совпадать со scrape_interval в observability/prometheus/prometheus.yml,
+      # иначе Grafana будет рисовать разрывы на графиках $__rate_interval.
+      timeInterval: 15s
