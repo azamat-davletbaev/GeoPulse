@@ -65,11 +65,11 @@ services:
       KAFKA_HEAP_OPTS: "-Xmx384m"
     mem_limit: 768m
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
-      interval: 10s
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9092'"]
+      interval: 30s
       timeout: 10s
-      retries: 12
-      start_period: 20s
+      retries: 10
+      start_period: 120s
     # Порт наружу не публикуем.
 
   clickhouse:
