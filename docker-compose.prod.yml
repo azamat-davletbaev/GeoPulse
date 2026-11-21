@@ -65,12 +65,14 @@ services:
       KAFKA_HEAP_OPTS: "-Xmx384m"
     mem_limit: 768m
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9092'"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/29092'"]
       interval: 30s
       timeout: 10s
       retries: 10
       start_period: 120s
     # Порт наружу не публикуем.
+    volumes:
+      - kafkadata:/tmp/kafka-logs
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -317,4 +319,4 @@ volumes:
   # Отдельные тома — чтобы `down` профиля не терял историю метрик и настройки.
   promdata:
   grafana_data:
-
+  kafkadata:
