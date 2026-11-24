@@ -23,5 +23,5 @@
   поэтому этот файл дополняет, а не заменяет базовый конфиг.
 -->
 <clickhouse>
-    <max_server_memory_usage>629145600</max_server_memory_usage>
+    <max_server_memory_usage>1073741824</max_server_memory_usage>
 </clickhouse>

@@ -96,7 +96,7 @@ services:
         soft: 262144
         hard: 262144
     # Ограничение памяти ClickHouse (сервер 2 ГБ RAM).
-    mem_limit: 768m
+    mem_limit: 1280m
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping > /dev/null"]
       interval: 5s
