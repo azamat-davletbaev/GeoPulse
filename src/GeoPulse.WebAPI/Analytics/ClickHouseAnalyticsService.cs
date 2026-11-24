@@ -25,13 +25,30 @@ namespace GeoPulse.WebAPI.Analytics
             "count() AS days_count " +
             "FROM " + ClickHouseSchema.ProductionDailyTable + " FINAL ";
 
+        /// <summary>
+        /// Настройки запроса, ограничивающие пиковую память на VPS с 3 ГБ RAM. FINAL на
+        /// ReplacingMergeTree и GROUP BY на лету при параллельных запросах упирались в
+        /// max_server_memory_usage (Code 241 MEMORY_LIMIT_EXCEEDED):
+        ///   * max_threads = 2 — меньше потоков на один запрос, ниже пик одновременных аллокаций;
+        ///   * max_bytes_before_external_group_by = 150000000 — агрегация свыше 150 МиБ
+        ///     сбрасывается на диск, а не упирается в лимит памяти.
+        /// SETTINGS перекрывают профильные настройки (users.d/query_limits.xml) для этих запросов.
+        /// </summary>
+        private const string QuerySettings =
+            " SETTINGS max_threads = 2, max_bytes_before_external_group_by = 150000000";
+
         /// <summary>Все помесячные агрегаты по всем скважинам.</summary>
         private const string AllMonthlySql =
-            MonthlyAggregateSql + "GROUP BY well_id, year, month ORDER BY year, month, well_id";
+            MonthlyAggregateSql + "GROUP BY well_id, year, month ORDER BY year, month, well_id" + QuerySettings;
 
-        /// <summary>Помесячные агрегаты одной скважины; well_id передаётся параметром запроса.</summary>
+        /// <summary>
+        /// Помесячные агрегаты одной скважины; well_id передаётся параметром запроса ({wellId:UInt32}),
+        /// а не подстановкой в текст. Сортировочный ключ таблицы — (npd_well_bore_code, date), поэтому
+        /// фильтр по well_id не отсекает гранулы по первичному индексу, но при ~15 тыс. строк это
+        /// пренебрежимо мало: основная память расходуется на FINAL-мердж частей, а не на скан.
+        /// </summary>
         private const string MonthlyByWellSql =
-            MonthlyAggregateSql + "WHERE well_id = {wellId:UInt32} GROUP BY well_id, year, month ORDER BY year, month";
+            MonthlyAggregateSql + "WHERE well_id = {wellId:UInt32} GROUP BY well_id, year, month ORDER BY year, month" + QuerySettings;
 
         /// <summary>
         /// Итоги за всё время. Суммы те же, что давала сумма по месяцам, а count() суточных строк
@@ -40,7 +57,7 @@ namespace GeoPulse.WebAPI.Analytics
         private const string SummarySql =
             "SELECT sum(oil_vol), sum(gas_vol), sum(water_vol), sum(water_injection_vol), " +
             "sum(on_stream_hrs), count() " +
-            "FROM " + ClickHouseSchema.ProductionDailyTable + " FINAL";
+            "FROM " + ClickHouseSchema.ProductionDailyTable + " FINAL" + QuerySettings;
 
         private readonly string _connectionString;
 

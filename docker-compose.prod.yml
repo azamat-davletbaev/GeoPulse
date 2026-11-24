@@ -85,7 +85,7 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - chdata:/var/lib/clickhouse
-      # Внутренний лимит памяти ClickHouse — 1 ГиБ (см.
+      # Внутренний лимит памяти ClickHouse — 1.4 ГиБ (см.
       # observability/clickhouse/max_server_memory_usage.xml). Отдельный файл в
       # config.d читается поверх config.xml при старте; том chdata не меняется,
       # поэтому `docker compose up -d clickhouse` (пересоздание контейнера) не
@@ -96,8 +96,10 @@ services:
       nofile:
         soft: 262144
         hard: 262144
-    # Ограничение памяти ClickHouse (сервер 2 ГБ RAM).
-    mem_limit: 1280m
+    # Ограничение памяти ClickHouse (сервер 3 ГБ RAM + 2 ГБ swap). Потолок cgroup
+    # выше внутреннего max_server_memory_usage (1.4 ГиБ) с запасом на page cache
+    # и оверхед процесса.
+    mem_limit: 1536m
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping > /dev/null"]
       interval: 5s

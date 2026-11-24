@@ -1,35 +1,46 @@
 <?xml version="1.0"?>
 <!--
-  Внутренний лимит памяти ClickHouse — 1 ГиБ (1073741824 байта).
+  Внутренний лимит памяти ClickHouse — 1.4 ГиБ (1503238554 байта).
   Монтируется в контейнер как /etc/clickhouse-server/config.d/max_server_memory_usage.xml
   (read-only), см. docker-compose.prod.yml. Том chdata с данными не затрагивается:
   файл конфигурации читается при старте, данные лежат отдельно.
 
   Зачем два лимита:
-    * mem_limit: 1280m в docker-compose.prod.yml — потолок cgroup; при его
+    * mem_limit: 1536m в docker-compose.prod.yml — потолок cgroup; при его
       превышении срабатывает OOM-killer и контейнер умирает целиком;
     * max_server_memory_usage (этот файл) — потолок самого процесса ClickHouse:
       при превышении сервер начинает отказывать в тяжёлых запросах
       (Code: 241, MEMORY_LIMIT_EXCEEDED) вместо убийства процесса.
-  1 ГиБ < 1280 МиБ cgroup намеренно: остаётся ~256 МиБ на page cache,
+  1.4 ГиБ < 1536 МиБ cgroup намеренно: остаётся ~130 МиБ на page cache,
   mmap-аллокации, jemalloc-арены и прочий оверхед.
 
-  Значение задано числом в байтах (1 ГиБ = 1 073 741 824), чтобы не зависеть от
-  автоопределения RAM/cgroup: у ClickHouse доля по умолчанию
-  (max_server_memory_usage_to_ram_ratio = 0.9) от cgroup-лимита 1280m дала бы
-  ~1152 МиБ — меньше запаса до жёсткого потолка.
+  Исторически стоял лимит 1 ГиБ под хост 2 ГБ RAM; параллельный шторм из семи
+  FINAL-запросов /api/Analytics/monthly в пике просил 1.15 ГиБ и упирался в этот
+  потолок. Хост поднят до 3 ГБ RAM + 2 ГБ swap, поэтому лимит процесса увеличен
+  до 1.4 ГиБ, а пиковая нагрузка запросов дополнительно срезана на стороне
+  WebAPI (SETTINGS max_threads = 2, max_bytes_before_external_group_by) и фронтенда
+  (concurrency = 2). Значение задано числом в байтах, чтобы не зависеть от
+  автоопределения RAM/cgroup.
+
+  Кэши урезаны: на крошечном датасете (~15 тыс. строк) значения по умолчанию
+  (uncompressed_cache_size ~8 ГиБ, mark_cache_size ~5 ГиБ) избыточны и впустую
+  резервируют память под фоновые мержи.
+    * uncompressed_cache_size — 256 МиБ;
+    * mark_cache_size — 128 МиБ.
 
   Порог внешней агрегации (max_bytes_before_external_group_by) сюда не входит:
   это query-настройка, в корне config.d/*.xml она игнорируется — её место
-  в профиле users.d/*.xml. Параметры фоновых мерджей (background_pool_size,
-  background_merges_mutations_concurrency_ratio) здесь не заданы намеренно:
-  их подбор под 1 vCPU — отдельное решение.
+  в профиле users.d/*.xml (уже задан) и в SETTINGS запросов WebAPI. Параметры
+  фоновых мерджей (background_pool_size, background_merges_mutations_concurrency_ratio)
+  оставлены прежними: не более одного конкурентного мержа на 1 vCPU.
 
   ClickHouse разбирает все файлы из config.d и мержит их поверх config.xml,
   поэтому этот файл дополняет, а не заменяет базовый конфиг.
 -->
 <clickhouse>
-    <max_server_memory_usage>1073741824</max_server_memory_usage>
+    <max_server_memory_usage>1503238554</max_server_memory_usage>
+    <uncompressed_cache_size>268435456</uncompressed_cache_size>
+    <mark_cache_size>134217728</mark_cache_size>
     <background_pool_size>4</background_pool_size>
     <background_merges_mutations_concurrency_ratio>1</background_merges_mutations_concurrency_ratio>
 </clickhouse>
