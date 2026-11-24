@@ -250,7 +250,9 @@ docker exec -i geopulse-postgres pg_restore -U geopulse -d geopulse_core --clean
 (теги `latest` и короткий SHA) и job `deploy` по SSH выполняет
 `bash /opt/geopulse/deploy.sh` с `IMAGE_TAG=<короткий SHA>`.
 
-`deploy.sh` делает по шагам: `git pull --ff-only` → `docker compose pull` →
+`deploy.sh` делает по шагам: `git fetch` + `git reset --hard origin/main`
+(клон приводится к origin, случайные локальные правки отслеживаемых файлов
+отбрасываются; `.env`, `data/` и docker-тома не затрагиваются) → `docker compose pull` →
 подъём postgres/kafka/clickhouse и ожидание готовности → миграции EF Core →
 создание топиков Kafka → `docker compose up -d --remove-orphans` →
 health-check `GET /health` (до 60 с) → `docker image prune -f` и сводка.

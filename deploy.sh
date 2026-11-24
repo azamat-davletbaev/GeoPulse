@@ -11,7 +11,9 @@
 # Порядок шагов:
 #   1. предусловия (docker, compose-файл, .env);
 #   2. обновление DOCKER_TAG в .env на переданный IMAGE_TAG;
-#   3. git pull --ff-only origin main (конфликт = падение с подсказкой);
+#   3. git fetch + reset --hard origin main (рабочее дерево приводится к origin;
+#      случайные локальные правки отслеживаемых файлов отбрасываются, а .env,
+#      data/ и docker-тома не отслеживаются и не затрагиваются);
 #   4. docker compose pull новых образов;
 #   5. подъём инфраструктуры (postgres/kafka/clickhouse) и ожидание готовности;
 #   6. применение EF Core миграций PostgreSQL (база geopulse_core) ДО старта
@@ -270,14 +272,34 @@ probe_webapi() {
 }
 
 # ----------------------------------------------------------------------------
-# 3. Обновление кода. Только fast-forward: при локальных правках падаем.
+# 3. Обновление кода. Рабочее дерево приводится к origin/${BRANCH} через
+#    fetch + reset --hard: случайные локальные правки отслеживаемых файлов
+#    (docker-compose.prod.yml, конфигов ClickHouse и т.п.) не ломают деплой —
+#    они просто отбрасываются. Неотслеживаемые .env, data/ и docker-тома
+#    не затрагиваются (.gitignore), поэтому секреты и данные сохраняются.
+#
+#    В автоматическом деплое pipeline.yml делает тот же reset ДО запуска
+#    deploy.sh, поэтому здесь это no-op; шаг нужен для ручного запуска.
+#    Если reset изменил сам deploy.sh, перезапускаемся новой версией, чтобы
+#    не исполнять файл, изменённый во время работы.
 # ----------------------------------------------------------------------------
-log "3/10 git pull --ff-only origin ${BRANCH}"
-if ! git pull --ff-only origin "$BRANCH"; then
-  die "git pull --ff-only не удался: в ${DEPLOY_DIR} есть локальные изменения или ветка разошлась с origin/${BRANCH} (конфликт).
+SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+SELF_HASH_BEFORE="$(sha256sum "$SELF_PATH" 2>/dev/null | cut -d' ' -f1 || true)"
+
+log "3/10 git fetch + reset --hard origin/${BRANCH}"
+if ! git fetch origin "$BRANCH"; then
+  die "git fetch origin ${BRANCH} не удался: нет доступа к origin (проверьте сеть и права клона в ${DEPLOY_DIR})."
+fi
+if ! git reset --hard "origin/${BRANCH}"; then
+  die "git reset --hard origin/${BRANCH} не удался: рабочее дерево в ${DEPLOY_DIR} не приведено к origin/${BRANCH}.
   Разберитесь вручную: git -C ${DEPLOY_DIR} status
-  Если локальные правки не нужны: git -C ${DEPLOY_DIR} reset --hard origin/${BRANCH}
-  Файл .env не под версионным контролем и этими командами не затрагивается."
+  Файл .env не под версионным контролем и этой командой не затрагивается."
+fi
+
+SELF_HASH_AFTER="$(sha256sum "$SELF_PATH" 2>/dev/null | cut -d' ' -f1 || true)"
+if [ -n "$SELF_HASH_BEFORE" ] && [ "$SELF_HASH_BEFORE" != "$SELF_HASH_AFTER" ]; then
+  log "deploy.sh обновился при синхронизации — перезапуск новой версией"
+  exec bash "$SELF_PATH" "$@"
 fi
 GIT_SHA="$(git rev-parse --short HEAD)"
 

@@ -180,5 +180,10 @@ jobs:
             # deploy.sh сам нормализует полный SHA к короткому тегу ghcr.
             export IMAGE_TAG="${{ steps.sha.outputs.short }}"
             cd /opt/geopulse
-            git pull --ff-only origin main
+            # Приводим клон к origin/main, отбрасывая случайные локальные правки
+            # отслеживаемых файлов (например, ручную правку docker-compose.prod.yml):
+            # иначе `git pull --ff-only` ломал весь CD-пайплайн. Неотслеживаемые
+            # .env, data/ и docker-тома не затрагиваются (см. .gitignore).
+            git fetch origin main
+            git reset --hard origin/main
             bash ./deploy.sh

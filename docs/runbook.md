@@ -108,6 +108,8 @@ $COMPOSE exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'select 
 ```bash
 export IMAGE_TAG="<короткий SHA>"
 cd /opt/geopulse
+git fetch origin main
+git reset --hard origin/main   # отбрасывает случайные локальные правки tracked-файлов
 bash ./deploy.sh
 ```
 
@@ -121,7 +123,7 @@ bash ./deploy.sh
 | --- | --- |
 | 1 | Предусловия: каталог `${DEPLOY_DIR:-/opt/geopulse}`, наличие `docker-compose.prod.yml`, `.env`, `.git`, `docker` и `docker compose`, непустой `DOMAIN` в `.env` |
 | 2 | Нормализует `IMAGE_TAG` (40-символьный SHA → 7 символов) и записывает в `.env` как `DOCKER_TAG`; предыдущее значение запоминает для отката |
-| 3 | `git pull --ff-only origin main`; при локальных правках/конфликте — падение с подсказкой (`git status`, `git reset --hard origin/main`); `.env` не затрагивается |
+| 3 | `git fetch origin main` + `git reset --hard origin/main`: рабочее дерево приводится к origin, случайные локальные правки отслеживаемых файлов отбрасываются (деплой не ломают); `.env`, `data/` и docker-тома не отслеживаются и не затрагиваются |
 | 4 | `docker compose pull` — тянет образы нового тега |
 | 5 | `up -d postgres kafka clickhouse`, ждёт healthy/running (postgres, clickhouse — до 120 с; Kafka — до 120 с) |
 | 6 | Миграции EF Core **до** старта сервисов: если в `src/GeoPulse.Infrastructure/Migrations` миграций больше, чем записей в `__EFMigrationsHistory`, поднимается одноразовый контейнер `geopulse-migrator` на образе `consumer` (он применяет миграции при старте), скрипт ждёт нужного количества записей и удаляет контейнер |
@@ -140,6 +142,8 @@ bash ./deploy.sh
 cd /opt/geopulse
 sudo -u deploy IMAGE_TAG=latest bash deploy.sh     # или IMAGE_TAG=<короткий SHA>
 ```
+
+`deploy.sh` сам синхронизирует клон с `origin` (шаг 3: `git fetch` + `git reset --hard`), поэтому предварительный `git pull` не нужен — случайные локальные правки отслеживаемых файлов будут отброшены. Если reset обновил сам `deploy.sh`, скрипт перезапустится новой версией.
 
 ### 2.4 Как откатиться
 
@@ -178,7 +182,7 @@ docker inspect -f '{{.State.Status}} / {{if .State.Health}}{{.State.Health.Statu
 | `webapi` падает с ошибкой «Не задана ConnectionStrings:ClickHouse» | не передана переменная `CLICKHOUSE_PASSWORD` | проверить `.env` (compose подставляет `${CLICKHOUSE_PASSWORD}`) |
 | `consumer` падает на миграциях | шаг 6 не смог применить миграции либо БД недоступна | `logs consumer`, затем `select "MigrationId" from "__EFMigrationsHistory"` |
 | контейнеры запущены, но `/health` отдаёт 503 | PostgreSQL недоступен приложению | `docker compose exec -T postgres pg_isready -U <POSTGRES_USER> -d <POSTGRES_DB>` |
-| шаг 3 упал на `git pull --ff-only` | локальные правки в `/opt/geopulse` | `git -C /opt/geopulse status`; если правки не нужны — `git -C /opt/geopulse reset --hard origin/main` |
+| шаг 3 упал на `git fetch`/`git reset --hard` | нет доступа к origin (сеть/права клона) или сбой ФС; локальные правки tracked-файлов деплой больше не роняют — они отбрасываются | проверить доступ к GitHub и права клона в `/opt/geopulse`; `git -C /opt/geopulse status` |
 
 После устранения причины повторить деплой; если нужно быстро вернуть прошлую версию — раздел 2.4.
 

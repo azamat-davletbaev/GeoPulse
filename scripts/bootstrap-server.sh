@@ -253,7 +253,7 @@ else
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 755 "$APP_DIR"
   sudo -u "$DEPLOY_USER" git clone --branch "$BRANCH" "$CLONE_URL" "$APP_DIR"
 fi
-# Владелец каталога — deploy: он запускает deploy.sh и делает git pull.
+# Владелец каталога — deploy: он запускает deploy.sh и делает git fetch + reset --hard.
 chown -R "$DEPLOY_USER":"$DEPLOY_USER" "$APP_DIR"
 
 # ----------------------------------------------------------------------------
