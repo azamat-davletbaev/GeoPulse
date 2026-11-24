@@ -7,6 +7,7 @@
 (function () {
   const {
     fetchJson,
+    mapLimit,
     formatNumber,
     monthKey,
     PALETTE,
@@ -18,6 +19,10 @@
   let chart;
   // Номер актуальной загрузки: ответы устаревших запросов (после «Повторить») игнорируются.
   let loadSeq = 0;
+
+  // Помесячные данные всех скважин — батчами по 2: серверный лимит ClickHouse —
+  // 1 ГиБ, параллельный шторм запросов давал MEMORY_LIMIT_EXCEEDED.
+  const MONTHLY_REQUEST_LIMIT = 2;
 
   function setHidden(id, hidden) {
     const el = document.getElementById(id);
@@ -129,8 +134,10 @@
       renderSummary(summary || {}, wellList.length);
       showSummary();
 
-      const perWell = await Promise.all(
-        wellList.map((well) => fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`))
+      const perWell = await mapLimit(
+        wellList,
+        MONTHLY_REQUEST_LIMIT,
+        (well) => fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`)
       );
       if (seq !== loadSeq) {
         return;

@@ -6,6 +6,7 @@
 (function () {
   const {
     fetchJson,
+    mapLimit,
     monthKey,
     PALETTE,
     lineSeries,
@@ -41,6 +42,10 @@
   // Верхний отступ — место под подписи осей: у правой оси «Газ, м³» имя рисуется
   // над ней, и при маленьком top ECharts обрезает его по ширине.
   const CHART_GRID = { left: 56, right: 60, top: 44, bottom: 52 };
+
+  // Факт по месторождению — сумма по всем скважинам, запросы идут батчами по 2:
+  // серверный лимит ClickHouse — 1 ГиБ, параллельный шторм давал MEMORY_LIMIT_EXCEEDED.
+  const MONTHLY_REQUEST_LIMIT = 2;
 
   let chart;
   let wells = [];
@@ -79,8 +84,10 @@
 
   async function fetchFact() {
     if (currentScope === 'field') {
-      const perWell = await Promise.all(
-        wells.map((well) => fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`))
+      const perWell = await mapLimit(
+        wells,
+        MONTHLY_REQUEST_LIMIT,
+        (well) => fetchJson(`/api/Analytics/monthly?wellId=${well.wellId}`)
       );
       return aggregateMonthly(perWell);
     }

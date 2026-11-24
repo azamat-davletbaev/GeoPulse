@@ -233,7 +233,7 @@ docker compose -f docker-compose.prod.yml exec -T clickhouse clickhouse-client \
   --user <CLICKHOUSE_USER> --password <CLICKHOUSE_PASSWORD> -q "show databases"
 ```
 
-Типовые причины: OOM (лимит `768m`), неверный `CLICKHOUSE_PASSWORD` в `.env` (тогда падают `chingest`, `webapi`), таблицы ещё не созданы — их создаёт `chingest` при старте, отдельных DDL-скриптов в репозитории нет.
+Типовые причины: OOM (лимит `1280m`, изнутри процесс ограничен `max_server_memory_usage` 1 ГиБ), неверный `CLICKHOUSE_PASSWORD` в `.env` (тогда падают `chingest`, `webapi`), таблицы ещё не созданы — их создаёт `chingest` при старте, отдельных DDL-скриптов в репозитории нет.
 
 ### 3.5 Проблема с TLS-сертификатом Caddy
 
@@ -340,7 +340,7 @@ sudo du -sh /var/lib/docker/containers/*/*-json.log | sort -h | tail -5
 | --- | --- | --- | --- |
 | `postgres` | `256m` | БД небольшая: ~15 тыс. строк добычи плюс справочники | `OOMKilled: true` в `docker inspect`; `restart: unless-stopped` поднимает контейнер заново |
 | `kafka` | `768m` | JVM heap ограничен отдельно: `KAFKA_HEAP_OPTS=-Xmx384m` | то же: `OOMKilled`, затем перезапуск |
-| `clickhouse` | `768m` | плюс `ulimits.nofile` 262144 | то же: `OOMKilled`, затем перезапуск |
+| `clickhouse` | `1280m` | плюс `ulimits.nofile` 262144; изнутри ограничен `max_server_memory_usage` 1 ГиБ | то же: `OOMKilled`, затем перезапуск |
 | `consumer` | `256m` | .NET-сервис, читает Kafka и пишет в PostgreSQL | то же: `OOMKilled`, затем перезапуск |
 | `chingest` | `256m` | .NET-сервис, пишет в ClickHouse | то же: `OOMKilled`, затем перезапуск |
 | `webapi` | `256m` | .NET-сервис, healthcheck `/health` каждые 10 с | то же: `OOMKilled`, затем перезапуск |

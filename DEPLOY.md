@@ -282,7 +282,7 @@ docker compose -f docker-compose.prod.yml up -d
 ## 6. Память (сервер 2 ГБ RAM)
 
 Лимиты в `docker-compose.prod.yml` — это верхние границы (потолки), а не резервирование:
-Postgres `256m`, Kafka heap `-Xmx384m` (контейнер `768m`), ClickHouse `768m`,
+Postgres `256m`, Kafka heap `-Xmx384m` (контейнер `768m`), ClickHouse `1280m` (изнутри — `max_server_memory_usage` 1 ГиБ),
 каждый .NET-сервис `256m` (`consumer`, `chingest`, `webapi`), Caddy `64m`. При нехватке памяти OOM-killer убьёт контейнер,
 `restart: unless-stopped` его поднимет. Если OOM повторяется — уменьшите лимиты
 ClickHouse/Kafka или число одновременных .NET-сервисов в пике.
@@ -366,7 +366,7 @@ free -m
 |---|---|---|---|---|---|
 | 1 | `postgres` | `geopulse-postgres` | `256m` | основной | БД небольшая: ~15 тыс. строк добычи + справочники |
 | 2 | `kafka` | `geopulse-kafka` | `768m` | основной | heap JVM `-Xmx384m` + оверхед брокера/контроллера |
-| 3 | `clickhouse` | `geopulse-clickhouse` | `768m` | основной | изнутри ограничен ≈600 МиБ (`max_server_memory_usage`) |
+| 3 | `clickhouse` | `geopulse-clickhouse` | `1280m` | основной | изнутри ограничен 1 ГиБ (`max_server_memory_usage`) |
 | 4 | `consumer` | `geopulse-consumer` | `256m` | основной | .NET: запас под GC при разборе потока Kafka |
 | 5 | `chingest` | `geopulse-chingest` | `256m` | основной | .NET: всплески аллокаций при пакетной записи в ClickHouse |
 | 6 | `webapi` | `geopulse-webapi` | `256m` | основной | .NET: GC/JIT под нагрузкой, отчёты xlsx/csv собираются в памяти |

@@ -5,6 +5,7 @@
 (function () {
   const {
     fetchJson,
+    mapLimit,
     formatNumber,
     escapeHtml,
     monthKey,
@@ -27,6 +28,10 @@
   const INTRO_TILE_WAIT_MS = 1500;
   const TRAJECTORY_CASCADE_DELAY_MS = 150;
   const INTRO_SESSION_KEY = 'geopulse.introSeen';
+
+  // Помесячные данные грузим по две скважины за раз: серверный лимит ClickHouse —
+  // 1 ГиБ, параллельный шторм запросов давал MEMORY_LIMIT_EXCEEDED.
+  const MONTHLY_REQUEST_LIMIT = 2;
 
   // Мобильная панель скважины занимает нижние 55dvh экрана (style.css,
   // @media (max-width: 768px)). На телефоне куст центрируется не в центре карты,
@@ -660,10 +665,12 @@
       showSummary(selectedWell, selectedMonthly);
     }
 
-    await Promise.all(located.map((well) =>
+    // Батчи по MONTHLY_REQUEST_LIMIT: отказ одной скважины гасится локально и не
+    // мешает остальным (preloadPromise при этом не отклоняется).
+    await mapLimit(located, MONTHLY_REQUEST_LIMIT, (well) =>
       loadMonthly(well).catch((error) => {
         console.warn(`Помесячные данные ${wellCaption(well)} не загружены`, error);
-      })));
+      }));
 
     renderWellList();
   }

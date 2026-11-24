@@ -211,11 +211,26 @@
     };
   }
 
+  // Ограниченный пул промисов: одновременно выполняется не больше `limit` задач,
+  // остальные ждут своей пачки. Порядок результата совпадает с порядком items.
+  // Серверный лимит ClickHouse — 1 ГиБ, параллельный шторм запросов
+  // (/api/Analytics/monthly по всем скважинам) давал MEMORY_LIMIT_EXCEEDED.
+  // Ошибку элемента обрабатывает вызывающий код: отказ одной скважины не должен
+  // ломать остальные.
+  async function mapLimit(items, limit, fn) {
+    const out = [];
+    for (let i = 0; i < items.length; i += limit) {
+      out.push(...await Promise.all(items.slice(i, i + limit).map(fn)));
+    }
+    return out;
+  }
+
   window.GeoPulse = {
     PALETTE,
     CHART_FONT,
     whenFontsReady,
     fetchJson,
+    mapLimit,
     formatNumber,
     escapeHtml,
     monthKey,

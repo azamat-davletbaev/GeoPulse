@@ -1,0 +1,10 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- Агрегация свыше 192 МиБ сбрасывается на диск вместо
+                 Code 241 MEMORY_LIMIT_EXCEEDED. Профильная настройка —
+                 живёт в users.d, а не в config.d. -->
+            <max_bytes_before_external_group_by>201326592</max_bytes_before_external_group_by>
+        </default>
+    </profiles>
+</clickhouse>
