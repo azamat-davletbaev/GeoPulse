@@ -30,9 +30,17 @@
 
   Порог внешней агрегации (max_bytes_before_external_group_by) сюда не входит:
   это query-настройка, в корне config.d/*.xml она игнорируется — её место
-  в профиле users.d/*.xml (уже задан) и в SETTINGS запросов WebAPI. Параметры
-  фоновых мерджей (background_pool_size, background_merges_mutations_concurrency_ratio)
-  оставлены прежними: не более одного конкурентного мержа на 1 vCPU.
+  в профиле users.d/*.xml (уже задан) и в SETTINGS запросов WebAPI.
+
+  Фоновые мержи: background_pool_size = 4 и concurrency_ratio = 1 дают
+  произведение 4 (не более одного конкурентного мержа на 1 vCPU). Встроенные
+  пороги <merge_tree> по умолчанию больше этого произведения, из-за чего
+  ClickHouse отказывался стартовать (Code 36 BAD_ARGUMENTS). Все пороги
+  number_of_free_entries_in_pool_to_* обязаны быть строго меньше
+  background_pool_size * background_merges_mutations_concurrency_ratio.
+  В ClickHouse 24.8 проверяются три: execute_mutation (по умолчанию 20),
+  lower_max_size_of_merge (8) и execute_optimize_entire_partition (25) —
+  поэтому заданы 2, 3 и 2.
 
   ClickHouse разбирает все файлы из config.d и мержит их поверх config.xml,
   поэтому этот файл дополняет, а не заменяет базовый конфиг.
@@ -43,4 +51,12 @@
     <mark_cache_size>134217728</mark_cache_size>
     <background_pool_size>4</background_pool_size>
     <background_merges_mutations_concurrency_ratio>1</background_merges_mutations_concurrency_ratio>
+    <!-- Пороги пула фоновых операций MergeTree должны быть строго меньше
+         background_pool_size * background_merges_mutations_concurrency_ratio (= 4),
+         иначе ClickHouse не стартует (Code 36 BAD_ARGUMENTS). -->
+    <merge_tree>
+        <number_of_free_entries_in_pool_to_execute_mutation>2</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>3</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>2</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+    </merge_tree>
 </clickhouse>
